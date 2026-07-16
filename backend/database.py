@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-# 專案根目錄（backend 的上一層， C:\healthWeb）
-BASE_DIR = Path(__file__).resolve().parent.parent
+# 專案根目錄（backend 的上一層， /）
+BASE_DIR = Path(__file__).resolve().parents[2]
 
 # 載入根目錄的 .env（API Key、管理員密碼等）
 load_dotenv(BASE_DIR / ".env")
@@ -19,6 +19,10 @@ DB_PATH = DATA_DIR / "menu.db"        # SQLite 資料庫檔案路徑
 # 若資料夾不存在就建立（exist_ok=True：已存在也不報錯）
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+print("BASE_DIR =", BASE_DIR)
+print("DATA_DIR =", DATA_DIR)
+print("UPLOAD_DIR =", UPLOAD_DIR)
 
 # 建立資料庫引擎，連到 SQLite 檔案
 engine = create_engine(

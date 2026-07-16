@@ -54,7 +54,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-FRONTEND_DIR = BASE_DIR / "frontend"  # 前端 HTML/CSS/JS 目錄
+FRONTEND_DIR = BASE_DIR / "healthWeb" / "frontend"  # 前端 HTML/CSS/JS 目錄
 
 
 # 資料庫裡 photo_files 是 JSON 字串，轉成 list 給前端較好用
