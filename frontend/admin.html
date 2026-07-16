@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HealthWeb 管理員</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="page-bg"></div>
+  <header class="topbar">
+    <a class="brand" href="/">HealthWeb</a>
+    <nav>
+      <a href="/" class="nav-link">餐盤辨識</a>
+      <a href="/admin.html" class="nav-link active">管理員</a>
+    </nav>
+  </header>
+
+  <main class="shell admin-shell">
+    <section id="login-panel" class="login-panel">
+      <h1>管理員登入</h1>
+      <p class="lead">輸入管理密碼以修改、刪除或匯入菜單。</p>
+      <form id="login-form" class="stack-form">
+        <label>
+          密碼
+          <input type="password" id="admin-password" required autocomplete="current-password" />
+        </label>
+        <button type="submit" class="btn primary">登入</button>
+      </form>
+    </section>
+
+    <section id="admin-panel" class="admin-panel hidden">
+      <div class="admin-toolbar">
+        <div>
+          <h1>菜單管理</h1>
+          <p class="muted">可修改、刪除，或匯入新的 Excel（既有資料不會被覆蓋）。</p>
+        </div>
+        <div class="toolbar-actions">
+          <label class="btn primary file-btn">
+            匯入 Excel
+            <input type="file" id="excel-input" accept=".xlsx,.xlsm,.xls" hidden />
+          </label>
+          <button type="button" class="btn ghost" id="logout-btn">登出</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>編號</th>
+              <th>餐別</th>
+              <th>菜名</th>
+              <th>組成</th>
+              <th>熱量</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="dish-tbody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="dish-dialog" class="dish-dialog">
+    <form id="dish-form" method="dialog" class="stack-form">
+      <h2 id="dialog-title">編輯菜色</h2>
+      <input type="hidden" id="dish-id" />
+      <div class="form-grid">
+        <label>餐別<input id="f-meal_type" /></label>
+        <label>菜色編號<input id="f-dish_code" type="number" /></label>
+        <label class="span-2">菜名<input id="f-name" required /></label>
+        <label class="span-2">組成<textarea id="f-composition" rows="2"></textarea></label>
+        <label>TFDA 替代名<input id="f-tfda_name" /></label>
+        <label>蓬鬆度<input id="f-fluffiness" /></label>
+        <label>熱量(100g)<input id="f-calories_100g" /></label>
+        <label>粗蛋白<input id="f-protein_100g" /></label>
+        <label>粗脂肪<input id="f-fat_100g" /></label>
+        <label>總碳水<input id="f-carb_100g" /></label>
+        <label>鈉<input id="f-sodium_mg" /></label>
+        <label>鉀<input id="f-potassium_mg" /></label>
+        <label class="span-2">烹調方式<textarea id="f-cooking_method" rows="3"></textarea></label>
+        <label class="span-2">吸油調味估算<textarea id="f-oil_flavor_note" rows="3"></textarea></label>
+        <label class="span-2">備註<textarea id="f-notes" rows="3"></textarea></label>
+      </div>
+      <div class="dialog-actions">
+        <button type="button" class="btn ghost" id="cancel-dialog">取消</button>
+        <button type="submit" class="btn primary">儲存</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/js/admin.js"></script>
+</body>
+</html>

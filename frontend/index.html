@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HealthWeb 餐盤辨識</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="page-bg"></div>
+  <header class="topbar">
+    <a class="brand" href="/">HealthWeb</a>
+    <nav>
+      <a href="/" class="nav-link active">餐盤辨識</a>
+      <a href="/admin.html" class="nav-link">管理員</a>
+    </nav>
+  </header>
+
+  <main class="shell">
+    <section class="hero-panel">
+      <p class="eyebrow">台鋼餐飲 · 智慧辨識</p>
+      <h1>上傳餐盤照片<br />辨識盤中菜色</h1>
+      <p class="lead">系統會依後端菜單資料庫比對，回傳菜名與模型信心分數。</p>
+
+      <form id="predict-form" class="upload-panel">
+        <label class="dropzone" id="dropzone" for="plate-input">
+          <input id="plate-input" type="file" accept="image/*" hidden />
+          <span class="drop-title">點擊或拖曳圖片到這裡</span>
+          <span class="drop-hint">支援 JPG、PNG、WEBP</span>
+          <img id="preview" class="preview hidden" alt="預覽" />
+        </label>
+        <button type="submit" class="btn primary" id="predict-btn" disabled>開始辨識</button>
+      </form>
+    </section>
+
+    <section class="results-panel" id="results-panel" hidden>
+      <div class="results-head">
+        <h2>辨識結果</h2>
+        <p class="model-tag" id="model-tag"></p>
+      </div>
+      <div class="result-image-wrap">
+        <canvas id="result-canvas" class="result-canvas hidden" aria-label="辨識結果標註圖"></canvas>
+      </div>
+      <img id="result-image" class="result-image hidden" alt="" hidden />
+      <div id="results-list" class="results-list"></div>
+      <p id="empty-result" class="empty hidden">未辨識到候選菜單中的菜色。</p>
+    </section>
+  </main>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="/js/app.js"></script>
+</body>
+</html>
