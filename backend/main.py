@@ -5,6 +5,8 @@ import json          # 處理 photo_files 的 JSON 字串 ↔ list
 import shutil        # 把上傳檔案寫到磁碟
 import uuid          # 產生不重複的暫存／上傳檔名
 from pathlib import Path  # 處理檔案路徑
+from dotenv import load_dotenv
+load_dotenv()
 
 # --- 第三方套件 ---
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile

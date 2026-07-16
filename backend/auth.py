@@ -7,6 +7,7 @@ import time
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "admin123")
 TOKEN_TTL_SECONDS = 60 * 60 * 12  # token 有效 12 小時
