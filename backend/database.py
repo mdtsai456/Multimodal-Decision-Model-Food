@@ -7,6 +7,7 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # 專案根目錄（backend 的上一層， /）
 BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_FOR_FRONT_DIR = Path(__file__).resolve().parent.parent  # 前端 HTML/CSS/JS 目錄
 
 # 載入根目錄的 .env（API Key、管理員密碼等）
 load_dotenv(BASE_DIR / ".env")
@@ -23,6 +24,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 print("BASE_DIR =", BASE_DIR)
 print("DATA_DIR =", DATA_DIR)
 print("UPLOAD_DIR =", UPLOAD_DIR)
+print("BASE_FOR_FRONT_DIR =", BASE_FOR_FRONT_DIR)
 
 # 建立資料庫引擎，連到 SQLite 檔案
 engine = create_engine(

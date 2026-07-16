@@ -23,7 +23,7 @@ from .auth import check_admin_password, create_admin_token, require_admin
 # check_admin_password：比對管理密碼
 # create_admin_token：登入成功後發 token
 # require_admin：保護需管理員權限的 API
-from .database import BASE_DIR, UPLOAD_DIR, Base, engine, get_db
+from .database import BASE_DIR, BASE_FOR_FRONT_DIR, UPLOAD_DIR, Base, engine, get_db
 # BASE_DIR / UPLOAD_DIR：專案與上傳路徑
 # Base / engine：建立資料表
 # get_db：每個請求取得資料庫連線
@@ -54,7 +54,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-FRONTEND_DIR = BASE_DIR / "healthWeb" / "frontend"  # 前端 HTML/CSS/JS 目錄
+FRONTEND_DIR = BASE_FOR_FRONT_DIR / "frontend"  # 前端 HTML/CSS/JS 目錄
 
 
 # 資料庫裡 photo_files 是 JSON 字串，轉成 list 給前端較好用
