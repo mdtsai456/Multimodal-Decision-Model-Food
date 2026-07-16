@@ -41,7 +41,12 @@ def verify_admin_token(token: str) -> bool:
 
 # 比對登入密碼是否與 .env 的 ADMIN_PASSWORD 相同
 def check_admin_password(password: str) -> bool:
-    return hmac.compare_digest(password, ADMIN_PASSWORD)
+    
+    return hmac.compare_digest(
+        password.strip(),
+        ADMIN_PASSWORD.strip()
+    )
+    
 
 
 # FastAPI 依賴：沒帶有效 token 就回 401，擋住非管理員請求
