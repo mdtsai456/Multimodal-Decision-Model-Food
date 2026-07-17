@@ -214,13 +214,18 @@ function renderResults(data) {
   const closePairs = items.filter((item) => getAlternative(item));
 
   console.log("[debug] predictions", items);
+  console.log(
+    `[debug] 雙結果門檻 CLOSE_CONFIDENCE_DELTA=${data.close_confidence_delta ?? "?"}`
+  );
   items.forEach((item) => {
     const second = item.second_best || item.alternative;
     const best = `${item.name} (${pct(item.confidence)})`;
     if (second) {
+      const delta = Math.abs(Number(item.confidence) - Number(second.confidence));
       const flag = item.alternative ? "採用雙結果" : "僅 debug（未存 result2）";
       console.log(
-        `[debug] 最佳/次佳: ${best} / ${second.name} (${pct(second.confidence)}) [${flag}]`
+        `[debug] 最佳/次佳: ${best} / ${second.name} (${pct(second.confidence)}) ` +
+          `差=${delta.toFixed(2)} [${flag}]`
       );
     } else {
       console.log(`[debug] 最佳/次佳: ${best} / 無次佳`);

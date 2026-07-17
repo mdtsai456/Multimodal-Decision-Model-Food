@@ -35,10 +35,12 @@ from .schemas import (
     DishUpdate,       # 編輯菜色請求格式
     PredictResponse,  # 辨識結果回傳格式
     PredictionItem,   # 單一辨識項目（菜名、confidence）
+    RecordDetailOut,  # 辨識紀錄詳情
+    RecordListOut,    # 辨識紀錄列表
     TokenOut,         # 登入成功回傳 token
 )
-from .result_store import save_recognition_bundle
-from .vision import recognize_dishes  # 呼叫 AI 模型辨識餐盤
+from .result_store import list_records_for_date, load_record_detail, save_recognition_bundle
+from .vision import CLOSE_CONFIDENCE_DELTA, recognize_dishes  # 呼叫 AI 模型辨識餐盤
 
 # 啟動時依 model 建立資料表（若已存在則略過）
 Base.metadata.create_all(bind=engine)
@@ -215,7 +217,34 @@ async def predict_plate(
         model=result["model"],
         raw=result.get("raw"),
         result_dir=session_dir.name,  # 例如 20260716_125930
+        close_confidence_delta=CLOSE_CONFIDENCE_DELTA,
     )
+
+
+# 依日期列出辨識紀錄（需管理員；資料夾名稱以 YYYYMMDD 開頭）
+@app.get("/api/admin/records", response_model=RecordListOut)
+def list_recognition_records(
+    date: str,
+    _: str = Depends(require_admin),
+):
+    compact = date.replace("-", "")
+    if len(compact) != 8 or not compact.isdigit():
+        raise HTTPException(status_code=400, detail="日期格式請用 YYYY-MM-DD")
+    records = list_records_for_date(UPLOAD_DIR, date)
+    nice = f"{compact[0:4]}-{compact[4:6]}-{compact[6:8]}"
+    return RecordListOut(date=nice, records=records)
+
+
+# 單筆辨識紀錄詳情（需管理員）
+@app.get("/api/admin/records/{session_id}", response_model=RecordDetailOut)
+def get_recognition_record(
+    session_id: str,
+    _: str = Depends(require_admin),
+):
+    detail = load_record_detail(UPLOAD_DIR, session_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="找不到辨識紀錄")
+    return RecordDetailOut(**detail)
 
 
 # 健康檢查：確認伺服器有在跑

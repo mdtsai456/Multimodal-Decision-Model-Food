@@ -126,3 +126,55 @@ class PredictResponse(BaseModel):
     model: str                         # 使用的模型名稱（如 gpt-5.6-luna）
     raw: Any | None = None             # 模型原始文字（除錯用）
     result_dir: str | None = None      # uploads 下的結果資料夾名稱
+    close_confidence_delta: float | None = None  # 採用雙結果的信心差門檻
+
+
+class RecordDishAlt(BaseModel):
+    """紀錄詳情中的次佳候選。"""
+
+    dish_id: str = ""
+    dish_name: str
+    confidence: float = Field(..., ge=0, le=1)
+
+
+class RecordDishItem(BaseModel):
+    """紀錄詳情中的一道菜。"""
+
+    dish_id: str = ""
+    dish_name: str
+    confidence: float = Field(..., ge=0, le=1)
+    alternative: RecordDishAlt | None = None
+
+
+class RecordSummary(BaseModel):
+    """某日辨識紀錄列表的一筆摘要。"""
+
+    id: str
+    date: str
+    time: str
+    meal_type: str = ""
+    dish_count: int = 0
+    dish_names: list[str] = Field(default_factory=list)
+    has_dual: bool = False
+    boxed_url: str
+
+
+class RecordListOut(BaseModel):
+    """依日期列出辨識紀錄。"""
+
+    date: str
+    records: list[RecordSummary]
+
+
+class RecordDetailOut(BaseModel):
+    """單筆辨識紀錄詳情（供管理員展開檢視）。"""
+
+    id: str
+    date: str
+    time: str
+    meal_type: str = ""
+    has_dual: bool = False
+    boxed_url: str
+    boxed1_url: str | None = None
+    boxed2_url: str | None = None
+    dishes: list[RecordDishItem] = Field(default_factory=list)

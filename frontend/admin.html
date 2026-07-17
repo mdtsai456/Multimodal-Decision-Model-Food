@@ -33,34 +33,59 @@
     </section>
 
     <section id="admin-panel" class="admin-panel hidden">
-      <div class="admin-toolbar">
-        <div>
-          <h1>菜單管理</h1>
-          <p class="muted">可修改、刪除，或匯入新的 Excel（既有資料不會被覆蓋）。</p>
+      <div class="admin-top">
+        <div class="admin-tabs" role="tablist">
+          <button type="button" class="admin-tab active" data-tab="menu" role="tab" aria-selected="true">菜單管理</button>
+          <button type="button" class="admin-tab" data-tab="records" role="tab" aria-selected="false">記錄管理</button>
         </div>
-        <div class="toolbar-actions">
-          <label class="btn primary file-btn">
-            匯入 Excel
-            <input type="file" id="excel-input" accept=".xlsx,.xlsm,.xls" hidden />
-          </label>
-          <button type="button" class="btn ghost" id="logout-btn">登出</button>
+        <button type="button" class="btn ghost" id="logout-btn">登出</button>
+      </div>
+
+      <div id="tab-menu" class="admin-tab-panel" role="tabpanel">
+        <div class="admin-toolbar">
+          <div>
+            <h1>菜單管理</h1>
+            <p class="muted">可修改、刪除，或匯入新的 Excel（既有資料不會被覆蓋）。</p>
+          </div>
+          <div class="toolbar-actions">
+            <label class="btn primary file-btn">
+              匯入 Excel
+              <input type="file" id="excel-input" accept=".xlsx,.xlsm,.xls" hidden />
+            </label>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>編號</th>
+                <th>餐別</th>
+                <th>菜名</th>
+                <th>組成</th>
+                <th>熱量</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody id="dish-tbody"></tbody>
+          </table>
         </div>
       </div>
 
-      <div class="table-wrap">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>編號</th>
-              <th>餐別</th>
-              <th>菜名</th>
-              <th>組成</th>
-              <th>熱量</th>
-              <th>操作</th>
-            </tr>
-          </thead>
-          <tbody id="dish-tbody"></tbody>
-        </table>
+      <div id="tab-records" class="admin-tab-panel hidden" role="tabpanel">
+        <div class="admin-toolbar">
+          <div>
+            <h1>記錄管理</h1>
+            <p class="muted">選擇日期後檢視當日所有餐盤辨識紀錄。</p>
+          </div>
+          <label class="date-picker-label">
+            日期
+            <input type="date" id="record-date" />
+          </label>
+        </div>
+
+        <div id="records-empty" class="empty records-empty">請選擇日期以載入辨識紀錄。</div>
+        <div id="records-list" class="records-list"></div>
       </div>
     </section>
   </main>

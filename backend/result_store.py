@@ -2,12 +2,156 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+# 資料夾命名：YYYYMMDD_HHMMSS 或 YYYYMMDD_HHMMSS_N
+SESSION_DIR_RE = re.compile(r"^(\d{8})_(\d{6})(?:_(\d+))?$")
+
+
+def parse_session_name(name: str) -> tuple[str, str] | None:
+    """回傳 (YYYYMMDD, HHMMSS)；不合命名規則則 None。"""
+    m = SESSION_DIR_RE.match(name)
+    if not m:
+        return None
+    return m.group(1), m.group(2)
+
+
+def _read_result_json(path: Path) -> dict | None:
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def list_records_for_date(upload_root: Path, date_ymd: str) -> list[dict]:
+    """
+    列出指定日期（YYYY-MM-DD 或 YYYYMMDD）的辨識紀錄。
+    依資料夾名稱前綴 YYYYMMDD 篩選。
+    """
+    compact = date_ymd.replace("-", "")
+    if not re.fullmatch(r"\d{8}", compact):
+        return []
+
+    records: list[dict] = []
+    if not upload_root.is_dir():
+        return records
+
+    for path in sorted(upload_root.iterdir(), reverse=True):
+        if not path.is_dir():
+            continue
+        parsed = parse_session_name(path.name)
+        if not parsed or parsed[0] != compact:
+            continue
+
+        date_part, time_part = parsed
+        payload = _read_result_json(path / "result.json") or {}
+        dishes = payload.get("dishes") if isinstance(payload.get("dishes"), list) else []
+        has_dual = (path / "result1").is_dir() and (path / "result2").is_dir()
+        names = [
+            str(d.get("dish_name") or "")
+            for d in dishes
+            if isinstance(d, dict) and d.get("dish_name")
+        ]
+        hh, mm, ss = time_part[0:2], time_part[2:4], time_part[4:6]
+        records.append(
+            {
+                "id": path.name,
+                "date": f"{date_part[0:4]}-{date_part[4:6]}-{date_part[6:8]}",
+                "time": f"{hh}:{mm}:{ss}",
+                "meal_type": str(payload.get("meal_type") or ""),
+                "dish_count": len(dishes),
+                "dish_names": names,
+                "has_dual": has_dual,
+                "boxed_url": f"/uploads/{path.name}/result_boxed.jpg",
+            }
+        )
+    return records
+
+
+def load_record_detail(upload_root: Path, session_id: str) -> dict | None:
+    """讀取單筆辨識紀錄詳情；找不到或路徑不合法回傳 None。"""
+    if not SESSION_DIR_RE.match(session_id):
+        return None
+    session_dir = (upload_root / session_id).resolve()
+    try:
+        session_dir.relative_to(upload_root.resolve())
+    except ValueError:
+        return None
+    if not session_dir.is_dir():
+        return None
+
+    parsed = parse_session_name(session_id)
+    if not parsed:
+        return None
+    date_part, time_part = parsed
+    hh, mm, ss = time_part[0:2], time_part[2:4], time_part[4:6]
+
+    has_dual = (session_dir / "result1").is_dir() and (session_dir / "result2").is_dir()
+    primary = _read_result_json(session_dir / "result.json") or {}
+    primary_dishes = (
+        primary.get("dishes") if isinstance(primary.get("dishes"), list) else []
+    )
+
+    dishes_out: list[dict] = []
+    if has_dual:
+        r1 = _read_result_json(session_dir / "result1" / "result.json") or {}
+        r2 = _read_result_json(session_dir / "result2" / "result.json") or {}
+        d1 = r1.get("dishes") if isinstance(r1.get("dishes"), list) else []
+        d2 = r2.get("dishes") if isinstance(r2.get("dishes"), list) else []
+        n = max(len(d1), len(d2), len(primary_dishes))
+        for i in range(n):
+            left = d1[i] if i < len(d1) and isinstance(d1[i], dict) else (
+                primary_dishes[i] if i < len(primary_dishes) and isinstance(primary_dishes[i], dict) else {}
+            )
+            right = d2[i] if i < len(d2) and isinstance(d2[i], dict) else None
+            item = {
+                "dish_id": str(left.get("dish_id") or ""),
+                "dish_name": str(left.get("dish_name") or ""),
+                "confidence": float(left.get("confidence") or 0),
+                "alternative": None,
+            }
+            if right and right.get("dish_name"):
+                # 僅當次候選菜名與主候選不同才當雙結果顯示
+                if str(right.get("dish_name")) != item["dish_name"]:
+                    item["alternative"] = {
+                        "dish_id": str(right.get("dish_id") or ""),
+                        "dish_name": str(right.get("dish_name") or ""),
+                        "confidence": float(right.get("confidence") or 0),
+                    }
+            dishes_out.append(item)
+    else:
+        for d in primary_dishes:
+            if not isinstance(d, dict):
+                continue
+            dishes_out.append(
+                {
+                    "dish_id": str(d.get("dish_id") or ""),
+                    "dish_name": str(d.get("dish_name") or ""),
+                    "confidence": float(d.get("confidence") or 0),
+                    "alternative": None,
+                }
+            )
+
+    return {
+        "id": session_id,
+        "date": f"{date_part[0:4]}-{date_part[4:6]}-{date_part[6:8]}",
+        "time": f"{hh}:{mm}:{ss}",
+        "meal_type": str(primary.get("meal_type") or ""),
+        "has_dual": has_dual,
+        "boxed_url": f"/uploads/{session_id}/result_boxed.jpg",
+        "boxed1_url": f"/uploads/{session_id}/result1/result_boxed.jpg" if has_dual else None,
+        "boxed2_url": f"/uploads/{session_id}/result2/result_boxed.jpg" if has_dual else None,
+        "dishes": dishes_out,
+    }
 
 
 def colors_for_count(n: int) -> list[tuple[int, int, int]]:

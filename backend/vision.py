@@ -19,6 +19,7 @@ BASE_URL = os.getenv("ZEABUR_AI_HUB_BASE_URL", "https://hnd1.aihub.zeabur.ai/")
 MODEL = os.getenv("AI_MODEL", "gpt-5.6-luna")
 # 兩道候選信心差 ≤ 此值時視為「相近」，前端拆成雙條、後端存 result1/result2
 CLOSE_CONFIDENCE_DELTA = float(os.getenv("CLOSE_CONFIDENCE_DELTA", "0.30"))
+print(f"[config] AI_MODEL={MODEL} CLOSE_CONFIDENCE_DELTA={CLOSE_CONFIDENCE_DELTA}")
 
 
 # 依檔名猜測圖片 MIME 類型；猜不到就當 jpeg
@@ -93,10 +94,10 @@ def _build_prompt(catalog: str) -> str:
 1. 只能從候選菜單中選擇，不可發明不存在的菜名。
 2. 請優先比對每道菜的「AI烹調方式/外觀特徵」與「組成」：顏色、質地、醬汁、形狀、切法、是否有配菜等，不要只看菜名。
 3. 請「逐格」檢查分格餐盤：每一格都要看，且同一格可能同時有 2 道以上菜色（左右並排、上下堆疊都算）。
-4. 顏色相近、同為燉煮/醬燒外觀的菜色（例如醬燒冬瓜與醬燒蘿蔔、番茄豆包）常被誤併或誤判，請依外觀特徵仔細區分。
+4. 顏色相近、同為燉煮/醬燒外觀的菜色（例如醬燒冬瓜與醬燒蘿蔔）常被誤判。若烹調方式相同、僅主食材不同，且畫面上看不出清楚差異，兩者 confidence 應接近（差距通常 < 0.2），不要把最佳拉到 0.95+、次佳壓到 0.6 以下。
 5. 若畫面明顯只有一道菜，請精準對到最吻合外觀特徵的那一道，不要硬湊其他菜。
 6. 一張餐盤也可能有多道菜，請全部列出，不要過早停止；但也不可為了湊數而亂猜。
-7. 每道菜給 confidence（0~1 浮點數）；外觀特徵吻合度高才給高分。
+7. 每道菜給 confidence（0~1 浮點數）；外觀特徵吻合度高才給高分。若最佳與次佳外觀極相似，請避免過度自信。
 8. 每道菜都要給 bbox（緊貼該道「食物」的外框）。
 9. 【強制次佳候選】每一筆預測都「必須」提供 alternative：針對「同一個 bbox 位置」從候選菜單另選一道最像的次佳菜（不可與 name 相同）。name 放信心最高者，alternative 放第二高者，並各自給 confidence。後端會依信心差決定是否採用；你仍必須每次都給出 alternative，不可省略。
 10. 若幾乎無法判斷，可回傳空陣列。
@@ -146,6 +147,7 @@ def _ask_model(prompt: str, media_type: str, image_b64: str) -> str:
     res = client.chat.completions.create(
         model=MODEL,
         max_tokens=2048,
+        temperature=0,
         messages=[
             {
                 "role": "user",
