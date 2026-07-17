@@ -8,10 +8,10 @@ const preview = document.getElementById("preview");           // 預覽圖
 const predictBtn = document.getElementById("predict-btn");
 const predictForm = document.getElementById("predict-form");
 const resultsPanel = document.getElementById("results-panel"); // 結果整塊區塊
-const resultCanvas = document.getElementById("result-canvas"); // 結果圖 + 外框
+const resultCanvas = document.getElementById("result-canvas"); // 單結果標註圖
 const resultBoxedPair = document.getElementById("result-boxed-pair");
-const resultBoxed1 = document.getElementById("result-boxed-1");
-const resultBoxed2 = document.getElementById("result-boxed-2");
+const resultCanvas1 = document.getElementById("result-canvas-1");
+const resultCanvas2 = document.getElementById("result-canvas-2");
 const resultsList = document.getElementById("results-list");   // 結果卡片列表
 const emptyResult = document.getElementById("empty-result");   // 沒辨到菜時的提示
 const modelTag = document.getElementById("model-tag");         // 顯示目前模型名稱
@@ -100,65 +100,6 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
-// 在 canvas 上畫原圖，並依 bbox 框出每道菜
-function drawResultImage(items) {
-  if (!previewUrl) {
-    resultCanvas.classList.add("hidden");
-    return;
-  }
-
-  const img = new Image();
-  img.onload = () => {
-    // 結果圖縮小顯示，避免佔滿整欄
-    const maxW = Math.min(420, resultsPanel.clientWidth || 420);
-    const scale = Math.min(1, maxW / img.width);
-    const w = Math.round(img.width * scale);
-    const h = Math.round(img.height * scale);
-
-    resultCanvas.width = w;
-    resultCanvas.height = h;
-    resultCanvas.classList.remove("hidden");
-
-    const ctx = resultCanvas.getContext("2d");
-    ctx.clearRect(0, 0, w, h);
-    ctx.drawImage(img, 0, 0, w, h);
-
-    items.forEach((item, index) => {
-      const box = item.bbox;
-      if (!Array.isArray(box) || box.length !== 4) return;
-
-      const [x, y, bw, bh] = box;
-      const color = colorForIndex(index, items.length);
-      const px = x * w;
-      const py = y * h;
-      const pw = bw * w;
-      const ph = bh * h;
-
-      // 外框
-      ctx.lineWidth = Math.max(2, Math.round(w / 220));
-      ctx.strokeStyle = color;
-      ctx.strokeRect(px, py, pw, ph);
-
-      // 有相近候選時標籤並排顯示兩個菜名
-      const alt = getAlternative(item);
-      const label = alt
-        ? `${item.name || ""}／${alt.name}`
-        : item.name || "";
-      ctx.font = `600 ${Math.max(12, Math.round(w / 40))}px "Noto Sans TC", sans-serif`;
-      const pad = 6;
-      const tw = ctx.measureText(label).width;
-      const th = Math.max(16, Math.round(w / 36));
-      const ly = Math.max(0, py - th - 4);
-      ctx.fillStyle = color;
-      ctx.fillRect(px, ly, tw + pad * 2, th + 4);
-
-      ctx.fillStyle = "#fff";
-      ctx.fillText(label, px + pad, ly + th - 2);
-    });
-  };
-  img.src = previewUrl;
-}
-
 function halfMeta(item) {
   const code = item.dish_code != null ? `編號 ${item.dish_code}` : "—";
   const reason = item.reason ? ` · ${escapeHtml(item.reason)}` : "";
@@ -185,23 +126,105 @@ function renderHalf(item, color) {
   `;
 }
 
-function showBoxedPair(resultDir) {
-  if (!resultDir || !resultBoxedPair) {
-    resultCanvas.classList.remove("hidden");
-    resultBoxedPair?.classList.add("hidden");
+// 在指定 canvas 上畫原圖與外框（瀏覽器繁中字型；不合併雙菜名）
+function paintBoxedCanvas(canvas, items) {
+  if (!canvas || !previewUrl) {
+    canvas?.classList.add("hidden");
     return;
   }
-  const bust = Date.now();
-  resultBoxed1.src = `/uploads/${encodeURIComponent(resultDir)}/result1/result_boxed.jpg?t=${bust}`;
-  resultBoxed2.src = `/uploads/${encodeURIComponent(resultDir)}/result2/result_boxed.jpg?t=${bust}`;
-  resultBoxedPair.classList.remove("hidden");
+
+  const img = new Image();
+  img.onload = () => {
+    const maxW = Math.min(420, resultsPanel.clientWidth || 420);
+    const scale = Math.min(1, maxW / img.width);
+    const w = Math.round(img.width * scale);
+    const h = Math.round(img.height * scale);
+
+    canvas.width = w;
+    canvas.height = h;
+    canvas.classList.remove("hidden");
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
+    items.forEach((item, index) => {
+      const box = item.bbox;
+      if (!Array.isArray(box) || box.length !== 4) return;
+
+      const [x, y, bw, bh] = box;
+      const color = colorForIndex(index, items.length);
+      const px = x * w;
+      const py = y * h;
+      const pw = bw * w;
+      const ph = bh * h;
+
+      ctx.lineWidth = Math.max(2, Math.round(w / 220));
+      ctx.strokeStyle = color;
+      ctx.strokeRect(px, py, pw, ph);
+
+      const label = item.name || "";
+      if (!label) return;
+      ctx.font = `600 ${Math.max(12, Math.round(w / 40))}px "Noto Sans TC", sans-serif`;
+      const pad = 6;
+      const tw = ctx.measureText(label).width;
+      const th = Math.max(16, Math.round(w / 36));
+      const ly = Math.max(0, py - th - 4);
+      ctx.fillStyle = color;
+      ctx.fillRect(px, ly, tw + pad * 2, th + 4);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(label, px + pad, ly + th - 2);
+    });
+  };
+  img.src = previewUrl;
+}
+
+function toResult1Items(items) {
+  return (items || []).map((item) => ({
+    name: item.name,
+    dish_code: item.dish_code,
+    confidence: item.confidence,
+    reason: item.reason,
+    bbox: item.bbox,
+  }));
+}
+
+function toResult2Items(items) {
+  return (items || []).map((item) => {
+    const alt = getAlternative(item);
+    if (!alt) {
+      return {
+        name: item.name,
+        dish_code: item.dish_code,
+        confidence: item.confidence,
+        reason: item.reason,
+        bbox: item.bbox,
+      };
+    }
+    return {
+      name: alt.name,
+      dish_code: alt.dish_code,
+      confidence: alt.confidence,
+      reason: alt.reason,
+      bbox: item.bbox,
+    };
+  });
+}
+
+function showDualCanvases(items) {
   resultCanvas.classList.add("hidden");
+  resultBoxedPair?.classList.remove("hidden");
+  paintBoxedCanvas(resultCanvas1, toResult1Items(items));
+  paintBoxedCanvas(resultCanvas2, toResult2Items(items));
 }
 
 function hideBoxedPair() {
   resultBoxedPair?.classList.add("hidden");
-  if (resultBoxed1) resultBoxed1.removeAttribute("src");
-  if (resultBoxed2) resultBoxed2.removeAttribute("src");
+}
+
+function showSingleCanvas(items) {
+  hideBoxedPair();
+  paintBoxedCanvas(resultCanvas, toResult1Items(items));
 }
 
 // 把後端辨識結果畫成卡片，並在圖上框出每道菜
@@ -241,12 +264,11 @@ function renderResults(data) {
 
   emptyResult.classList.toggle("hidden", items.length > 0);
 
-  if (closePairs.length > 0 && data.result_dir) {
-    // 有相近雙候選：顯示後端存的 result1 / result2 標註圖
-    showBoxedPair(data.result_dir);
+  if (closePairs.length > 0) {
+    // 雙結果：只顯示 result1 / result2 兩張（canvas 繁中），不畫合併圖
+    showDualCanvases(items);
   } else {
-    hideBoxedPair();
-    drawResultImage(items);
+    showSingleCanvas(items);
   }
 
   items.forEach((item, index) => {
@@ -256,7 +278,6 @@ function renderResults(data) {
     const alt = getAlternative(item);
 
     if (alt) {
-      // 信心相近：左右各半條（例如 醬燒蘿蔔 | 醬燒冬瓜）
       const colorAlt = altColorForIndex(index, items.length);
       card.className = "result-card result-card--split";
       card.innerHTML = renderHalf(item, color) + renderHalf(alt, colorAlt);

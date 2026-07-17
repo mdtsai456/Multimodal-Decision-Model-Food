@@ -356,10 +356,12 @@ def make_session_dir(upload_root: Path) -> Path:
 
 
 def _load_font(image_width: int) -> ImageFont.ImageFont:
-    # 字級略大，縮圖後繁中仍清晰（舊版 //40 縮成預覽後易糊）
+    # 字級略大，縮圖後繁中仍清晰
     size = max(28, image_width // 28)
-    # (路徑, ttc index)；.ttf/.otf 的 index 失敗時再試不帶 index
+    # 優先用專案內建繁中字型（部署 Linux 沒有 Windows 字型時仍正常）
+    bundled = Path(__file__).resolve().parent / "assets" / "fonts" / "NotoSansTC-Regular.otf"
     candidates: list[tuple[Path, int]] = [
+        (bundled, 0),
         (Path(r"C:\Windows\Fonts") / "msjh.ttc", 0),
         (Path(r"C:\Windows\Fonts") / "msyh.ttc", 0),
         (Path(r"C:\Windows\Fonts") / "mingliu.ttc", 0),
@@ -367,6 +369,8 @@ def _load_font(image_width: int) -> ImageFont.ImageFont:
         (Path(r"C:\Windows\Fonts") / "arialuni.ttf", 0),
         (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), 0),
         (Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"), 0),
+        (Path("/usr/share/fonts/opentype/noto/NotoSansCJKtc-Regular.otf"), 0),
+        (Path("/usr/share/fonts/truetype/noto/NotoSansTC-Regular.otf"), 0),
     ]
     for candidate, index in candidates:
         if not candidate.exists():
@@ -378,6 +382,7 @@ def _load_font(image_width: int) -> ImageFont.ImageFont:
                 return ImageFont.truetype(str(candidate), size=size)
             except OSError:
                 continue
+    print("[warn] 找不到繁中字型，標註圖菜名可能變小或亂碼；請確認 backend/assets/fonts/NotoSansTC-Regular.otf")
     return ImageFont.load_default()
 
 

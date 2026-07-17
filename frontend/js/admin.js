@@ -309,7 +309,7 @@ function dishesHaveBbox(dishes) {
   );
 }
 
-/** 與辨識頁相同：在 canvas 依顯示尺寸重畫外框與繁中菜名 */
+/** 與辨識頁相同：在 canvas 依顯示尺寸重畫外框與繁中菜名（單一菜名，不合併） */
 function paintRecordCanvas(canvas, originalUrl, dishes) {
   const img = new Image();
   img.onload = () => {
@@ -342,10 +342,7 @@ function paintRecordCanvas(canvas, originalUrl, dishes) {
       ctx.strokeStyle = color;
       ctx.strokeRect(px, py, pw, ph);
 
-      const alt = item.alternative;
-      const label = alt?.dish_name
-        ? `${item.dish_name || ""}／${alt.dish_name}`
-        : item.dish_name || "";
+      const label = item.dish_name || item.name || "";
       if (!label) return;
 
       ctx.font = `600 ${Math.max(12, Math.round(w / 40))}px "Noto Sans TC", sans-serif`;
@@ -362,19 +359,49 @@ function paintRecordCanvas(canvas, originalUrl, dishes) {
   img.src = originalUrl;
 }
 
+function toAdminResult1(dishes) {
+  return (dishes || []).map((d) => ({
+    dish_name: d.dish_name,
+    bbox: d.bbox,
+  }));
+}
+
+function toAdminResult2(dishes) {
+  return (dishes || []).map((d) => {
+    const alt = d.alternative;
+    if (alt && alt.dish_name) {
+      return { dish_name: alt.dish_name, bbox: d.bbox };
+    }
+    return { dish_name: d.dish_name, bbox: d.bbox };
+  });
+}
+
 function renderRecordDetail(detail) {
   const dishes = detail.dishes || [];
   const bust = Date.now();
   const canCanvas = Boolean(detail.original_url) && dishesHaveBbox(dishes);
+  const hasDual = Boolean(detail.has_dual);
   let imageHtml = "";
 
-  if (canCanvas) {
-    // 與餐盤辨識頁相同：用原圖 + bbox 在 canvas 重畫（繁中清晰）
+  if (canCanvas && hasDual) {
+    // 雙結果：兩張 canvas（與辨識頁相同畫法），不顯示合併圖
+    imageHtml = `
+      <div class="result-boxed-pair">
+        <figure class="result-boxed-fig">
+          <canvas class="result-canvas record-result-canvas-1" aria-label="result1 標註圖"></canvas>
+          <figcaption>result1</figcaption>
+        </figure>
+        <figure class="result-boxed-fig">
+          <canvas class="result-canvas record-result-canvas-2" aria-label="result2 標註圖"></canvas>
+          <figcaption>result2</figcaption>
+        </figure>
+      </div>`;
+  } else if (canCanvas) {
     imageHtml = `
       <div class="result-image-wrap">
         <canvas class="result-canvas record-result-canvas" aria-label="辨識結果標註圖"></canvas>
       </div>`;
-  } else if (detail.has_dual && detail.boxed1_url && detail.boxed2_url) {
+  } else if (hasDual && detail.boxed1_url && detail.boxed2_url) {
     imageHtml = `
       <div class="result-boxed-pair">
         <figure class="result-boxed-fig">
@@ -439,6 +466,7 @@ function renderRecordDetail(detail) {
       ${empty}
     </div>`,
     canCanvas,
+    hasDual,
     originalUrl: detail.original_url,
     dishes,
   };
@@ -532,10 +560,17 @@ recordsList.addEventListener("click", async (e) => {
     if (expandedRecordId !== id) return;
     const painted = renderRecordDetail(detail);
     body.innerHTML = painted.html;
-    if (painted.canCanvas) {
-      const canvas = body.querySelector(".record-result-canvas");
-      if (canvas) {
-        paintRecordCanvas(canvas, painted.originalUrl, painted.dishes);
+    if (painted.canCanvas && painted.originalUrl) {
+      if (painted.hasDual) {
+        const c1 = body.querySelector(".record-result-canvas-1");
+        const c2 = body.querySelector(".record-result-canvas-2");
+        if (c1) paintRecordCanvas(c1, painted.originalUrl, toAdminResult1(painted.dishes));
+        if (c2) paintRecordCanvas(c2, painted.originalUrl, toAdminResult2(painted.dishes));
+      } else {
+        const canvas = body.querySelector(".record-result-canvas");
+        if (canvas) {
+          paintRecordCanvas(canvas, painted.originalUrl, toAdminResult1(painted.dishes));
+        }
       }
     }
   } catch (err) {

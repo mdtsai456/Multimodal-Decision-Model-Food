@@ -19,7 +19,12 @@ BASE_URL = os.getenv("ZEABUR_AI_HUB_BASE_URL", "https://hnd1.aihub.zeabur.ai/")
 MODEL = os.getenv("AI_MODEL", "gpt-5.6-luna")
 # 兩道候選信心差 ≤ 此值時視為「相近」，前端拆成雙條、後端存 result1/result2
 CLOSE_CONFIDENCE_DELTA = float(os.getenv("CLOSE_CONFIDENCE_DELTA", "0.30"))
-print(f"[config] AI_MODEL={MODEL} CLOSE_CONFIDENCE_DELTA={CLOSE_CONFIDENCE_DELTA}")
+# 框整體往下移（相對整張圖高度 0~1）。調大＝更下面；調小／0＝較上面
+BBOX_Y_SHIFT = float(os.getenv("BBOX_Y_SHIFT", "0.12"))
+print(
+    f"[config] AI_MODEL={MODEL} CLOSE_CONFIDENCE_DELTA={CLOSE_CONFIDENCE_DELTA} "
+    f"BBOX_Y_SHIFT={BBOX_Y_SHIFT}"
+)
 
 
 # 依檔名猜測圖片 MIME 類型；猜不到就當 jpeg
@@ -127,11 +132,13 @@ JSON 格式（alternative 為必填；bbox 用左上＋右下角點）：
 bbox 說明（務必正確，常見錯誤會害下排框飄到上排）：
 - 格式 [x1, y1, x2, y2]：左上角 (x1,y1) 與右下角 (x2,y2)，皆為相對「整張照片」的 0～1
 - 原點在「整張圖」左上；y 愈大愈靠下（不是餐盤內座標）
-- 框要包住該道菜的食物像素，可略含醬汁／邊緣；不要框到上方空格或隔壁格
-- 分格餐盤「下排」的菜：y1、y2 都必須明顯偏大（通常 y1 約在 0.45～0.70，y2 接近該格底部）；禁止把下排框畫在上排格子裡
-- 分格餐盤「上排」的菜：y2 通常應小於約 0.55，不要拉到下排
+- 框要包住該道菜的「全部」食物像素：上緣貼近食物頂部、下緣貼近食物底部；寧可略大，不要只框上半截
+- 分格餐盤常見為上排／下排兩列：下排菜的中心點通常在整張圖 y≈0.65～0.85，y2 常 ≥ 0.78；若下排框的 y2 < 0.70，多半是畫太上面了，請下移並加高
+- 禁止：下排框的上緣畫進上排格子，或下緣停在食物中間
+- 上排菜：中心點通常在 y≈0.25～0.45，不要拉到下排
 - 同一格有兩道菜時請左右分開框，但仍要對準食物高度
 - alternative 與主預測共用同一 bbox，不要為 alternative 另開一筆 predictions
+- 菜名必須與候選菜單「完全一致」（繁體字），不可改成簡體或其他寫法
 
 候選菜單（含 AI 烹調方式敘述，請用來比對外觀）：
 {catalog}
@@ -370,6 +377,29 @@ def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
     return merged
 
 
+def _nudge_lower_bboxes(predictions: list[dict]) -> None:
+    """
+    將 bbox 往下移／加高，補償模型常見的「框偏上」。
+    主要調 BBOX_Y_SHIFT（.env 或上方常數）；數字愈大框愈下面。
+    """
+    shift = max(0.0, BBOX_Y_SHIFT)
+    for p in predictions:
+        box = p.get("bbox")
+        if not isinstance(box, (list, tuple)) or len(box) != 4:
+            continue
+        try:
+            x, y, bw, bh = [float(v) for v in box]
+        except (TypeError, ValueError):
+            continue
+        # 1) 整體下移
+        y = min(1.0 - 0.02, y + shift)
+        # 2) 略加高，讓下緣更貼食物底部
+        bh = min(1.0 - y, bh + shift * 0.5)
+        if bw < 0.02 or bh < 0.02:
+            continue
+        p["bbox"] = [round(x, 4), round(y, 4), round(bw, 4), round(bh, 4)]
+
+
 def _debug_print_close_candidates(predictions: list[dict]) -> None:
     """印出每道菜的最佳／次佳，以及是否採用 alternative。"""
     if not predictions:
@@ -442,6 +472,7 @@ def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
     # 信心高的排前面，再合併重疊且信心相近的獨立兩筆
     predictions.sort(key=lambda x: x["confidence"], reverse=True)
     predictions = _merge_overlapping_close_pairs(predictions)
+    _nudge_lower_bboxes(predictions)
     print(f"[debug] 主預測共 {len(predictions)} 道: {[p.get('name') for p in predictions]}")
     _debug_print_close_candidates(predictions)
     return {"predictions": predictions, "model": MODEL, "raw": raw_text}
