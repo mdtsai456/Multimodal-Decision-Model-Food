@@ -135,6 +135,7 @@ class RecordDishAlt(BaseModel):
     dish_id: str = ""
     dish_name: str
     confidence: float = Field(..., ge=0, le=1)
+    reason: str | None = None
 
 
 class RecordDishItem(BaseModel):
@@ -143,6 +144,8 @@ class RecordDishItem(BaseModel):
     dish_id: str = ""
     dish_name: str
     confidence: float = Field(..., ge=0, le=1)
+    reason: str | None = None
+    bbox: list[float] | None = None
     alternative: RecordDishAlt | None = None
 
 
@@ -174,6 +177,7 @@ class RecordDetailOut(BaseModel):
     time: str
     meal_type: str = ""
     has_dual: bool = False
+    original_url: str | None = None
     boxed_url: str
     boxed1_url: str | None = None
     boxed2_url: str | None = None

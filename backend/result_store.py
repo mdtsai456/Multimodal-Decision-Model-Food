@@ -77,6 +77,153 @@ def list_records_for_date(upload_root: Path, date_ymd: str) -> list[dict]:
     return records
 
 
+def _color_dist(a: tuple[int, int, int], b: tuple[int, int, int]) -> int:
+    return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+
+
+def recover_bboxes_from_boxed(
+    original_path: Path,
+    boxed_path: Path,
+    dish_count: int,
+) -> list[list[float] | None]:
+    """
+    舊紀錄沒存 bbox 時，比對原圖與標註圖的色塊還原相對座標。
+    回傳長度 = dish_count；失敗的位置為 None。
+    """
+    if dish_count <= 0 or not original_path.is_file() or not boxed_path.is_file():
+        return []
+
+    orig = ImageOps.exif_transpose(Image.open(original_path)).convert("RGB")
+    boxed = Image.open(boxed_path).convert("RGB")
+    if boxed.size != orig.size:
+        boxed = boxed.resize(orig.size)
+    w, h = orig.size
+    op = orig.load()
+    bp = boxed.load()
+    colors = colors_for_count(dish_count)
+    boxes: list[list[float] | None] = []
+
+    for color in colors:
+        xs: list[int] = []
+        ys: list[int] = []
+        for y in range(0, h, 2):
+            for x in range(0, w, 2):
+                bc = bp[x, y]
+                oc = op[x, y]
+                if _color_dist(bc, color) <= 40 and _color_dist(bc, oc) > 30:
+                    xs.append(x)
+                    ys.append(y)
+        if len(xs) < 8:
+            boxes.append(None)
+            continue
+        x0, x1 = min(xs), max(xs)
+        y0, y1 = min(ys), max(ys)
+        # 標籤列在框上方，略往下裁，讓 canvas 標籤不要疊太高
+        trim = max(8, (y1 - y0) // 12)
+        y0 = min(y0 + trim, y1 - 4)
+        boxes.append(
+            [
+                round(x0 / w, 4),
+                round(y0 / h, 4),
+                round((x1 - x0) / w, 4),
+                round((y1 - y0) / h, 4),
+            ]
+        )
+    return boxes
+
+
+def _ensure_dish_bboxes(session_dir: Path, dishes: list[dict]) -> list[dict]:
+    """若 dishes 缺 bbox，嘗試從標註圖還原並寫回該筆 result.json。"""
+    if not dishes:
+        return dishes
+    if all(isinstance(d.get("bbox"), list) and len(d["bbox"]) == 4 for d in dishes):
+        return dishes
+
+    boxed = session_dir / "result_boxed.jpg"
+    original = next(iter(sorted(session_dir.glob("original.*"))), None)
+    if (session_dir / "result1" / "result_boxed.jpg").is_file():
+        boxed = session_dir / "result1" / "result_boxed.jpg"
+        original = next(
+            iter(sorted((session_dir / "result1").glob("original.*"))),
+            original,
+        )
+    if original is None or not boxed.is_file():
+        return dishes
+
+    try:
+        recovered = recover_bboxes_from_boxed(original, boxed, len(dishes))
+    except OSError:
+        return dishes
+
+    changed = False
+    for dish, bbox in zip(dishes, recovered):
+        if bbox and not (
+            isinstance(dish.get("bbox"), list) and len(dish.get("bbox")) == 4
+        ):
+            dish["bbox"] = bbox
+            changed = True
+
+    if changed:
+        result_path = session_dir / "result.json"
+        payload = _read_result_json(result_path) or {}
+        payload_dishes = (
+            payload.get("dishes") if isinstance(payload.get("dishes"), list) else []
+        )
+        for i, d in enumerate(payload_dishes):
+            if i < len(dishes) and dishes[i].get("bbox"):
+                if isinstance(d, dict):
+                    d["bbox"] = dishes[i]["bbox"]
+        payload["dishes"] = payload_dishes or [
+            {
+                "dish_id": d.get("dish_id", ""),
+                "dish_name": d.get("dish_name", ""),
+                "confidence": d.get("confidence", 0),
+                "bbox": d.get("bbox"),
+            }
+            for d in dishes
+        ]
+        try:
+            result_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    return dishes
+
+
+def _normalize_stored_dish(d: dict) -> dict:
+    """把 result.json 的一道菜轉成 API 詳情格式。"""
+    bbox = d.get("bbox")
+    if not isinstance(bbox, list) or len(bbox) != 4:
+        bbox = None
+    else:
+        try:
+            bbox = [float(v) for v in bbox]
+        except (TypeError, ValueError):
+            bbox = None
+
+    alt_raw = d.get("alternative")
+    alternative = None
+    if isinstance(alt_raw, dict) and alt_raw.get("dish_name"):
+        alternative = {
+            "dish_id": str(alt_raw.get("dish_id") or ""),
+            "dish_name": str(alt_raw.get("dish_name") or ""),
+            "confidence": float(alt_raw.get("confidence") or 0),
+            "reason": alt_raw.get("reason") or None,
+        }
+
+    return {
+        "dish_id": str(d.get("dish_id") or ""),
+        "dish_name": str(d.get("dish_name") or ""),
+        "confidence": float(d.get("confidence") or 0),
+        "reason": d.get("reason") or None,
+        "bbox": bbox,
+        "alternative": alternative,
+    }
+
+
 def load_record_detail(upload_root: Path, session_id: str) -> dict | None:
     """讀取單筆辨識紀錄詳情；找不到或路徑不合法回傳 None。"""
     if not SESSION_DIR_RE.match(session_id):
@@ -102,44 +249,51 @@ def load_record_detail(upload_root: Path, session_id: str) -> dict | None:
     )
 
     dishes_out: list[dict] = []
-    if has_dual:
-        r1 = _read_result_json(session_dir / "result1" / "result.json") or {}
-        r2 = _read_result_json(session_dir / "result2" / "result.json") or {}
-        d1 = r1.get("dishes") if isinstance(r1.get("dishes"), list) else []
-        d2 = r2.get("dishes") if isinstance(r2.get("dishes"), list) else []
-        n = max(len(d1), len(d2), len(primary_dishes))
+    r1 = _read_result_json(session_dir / "result1" / "result.json") or {}
+    r2 = _read_result_json(session_dir / "result2" / "result.json") or {}
+    d1 = r1.get("dishes") if isinstance(r1.get("dishes"), list) else []
+    d2 = r2.get("dishes") if isinstance(r2.get("dishes"), list) else []
+
+    if primary_dishes:
+        for i, d in enumerate(primary_dishes):
+            if not isinstance(d, dict):
+                continue
+            item = _normalize_stored_dish(d)
+            if item["bbox"] is None and i < len(d1) and isinstance(d1[i], dict):
+                item["bbox"] = _normalize_stored_dish(d1[i])["bbox"]
+            if item["alternative"] is None and i < len(d2) and isinstance(d2[i], dict):
+                right = d2[i]
+                if right.get("dish_name") and str(right.get("dish_name")) != item["dish_name"]:
+                    item["alternative"] = {
+                        "dish_id": str(right.get("dish_id") or ""),
+                        "dish_name": str(right.get("dish_name") or ""),
+                        "confidence": float(right.get("confidence") or 0),
+                        "reason": right.get("reason") or None,
+                    }
+            dishes_out.append(item)
+    elif has_dual:
+        n = max(len(d1), len(d2))
         for i in range(n):
-            left = d1[i] if i < len(d1) and isinstance(d1[i], dict) else (
-                primary_dishes[i] if i < len(primary_dishes) and isinstance(primary_dishes[i], dict) else {}
-            )
+            left_src = d1[i] if i < len(d1) and isinstance(d1[i], dict) else {}
+            item = _normalize_stored_dish(left_src)
             right = d2[i] if i < len(d2) and isinstance(d2[i], dict) else None
-            item = {
-                "dish_id": str(left.get("dish_id") or ""),
-                "dish_name": str(left.get("dish_name") or ""),
-                "confidence": float(left.get("confidence") or 0),
-                "alternative": None,
-            }
             if right and right.get("dish_name"):
-                # 僅當次候選菜名與主候選不同才當雙結果顯示
                 if str(right.get("dish_name")) != item["dish_name"]:
                     item["alternative"] = {
                         "dish_id": str(right.get("dish_id") or ""),
                         "dish_name": str(right.get("dish_name") or ""),
                         "confidence": float(right.get("confidence") or 0),
+                        "reason": right.get("reason") or None,
                     }
             dishes_out.append(item)
-    else:
-        for d in primary_dishes:
-            if not isinstance(d, dict):
-                continue
-            dishes_out.append(
-                {
-                    "dish_id": str(d.get("dish_id") or ""),
-                    "dish_name": str(d.get("dish_name") or ""),
-                    "confidence": float(d.get("confidence") or 0),
-                    "alternative": None,
-                }
-            )
+
+    # 舊紀錄缺 bbox：從標註圖還原，讓前端可用 canvas 畫出清晰繁中標籤
+    dishes_out = _ensure_dish_bboxes(session_dir, dishes_out)
+
+    original = next(iter(sorted(session_dir.glob("original.*"))), None)
+    original_url = (
+        f"/uploads/{session_id}/{original.name}" if original and original.is_file() else None
+    )
 
     return {
         "id": session_id,
@@ -147,6 +301,7 @@ def load_record_detail(upload_root: Path, session_id: str) -> dict | None:
         "time": f"{hh}:{mm}:{ss}",
         "meal_type": str(primary.get("meal_type") or ""),
         "has_dual": has_dual,
+        "original_url": original_url,
         "boxed_url": f"/uploads/{session_id}/result_boxed.jpg",
         "boxed1_url": f"/uploads/{session_id}/result1/result_boxed.jpg" if has_dual else None,
         "boxed2_url": f"/uploads/{session_id}/result2/result_boxed.jpg" if has_dual else None,
@@ -201,11 +356,24 @@ def make_session_dir(upload_root: Path) -> Path:
 
 
 def _load_font(image_width: int) -> ImageFont.ImageFont:
-    size = max(14, image_width // 40)
-    # Windows 常見中文字型
-    for name in ("msjh.ttc", "msyh.ttc", "mingliu.ttc", "arialuni.ttf"):
-        candidate = Path(r"C:\Windows\Fonts") / name
-        if candidate.exists():
+    # 字級略大，縮圖後繁中仍清晰（舊版 //40 縮成預覽後易糊）
+    size = max(28, image_width // 28)
+    # (路徑, ttc index)；.ttf/.otf 的 index 失敗時再試不帶 index
+    candidates: list[tuple[Path, int]] = [
+        (Path(r"C:\Windows\Fonts") / "msjh.ttc", 0),
+        (Path(r"C:\Windows\Fonts") / "msyh.ttc", 0),
+        (Path(r"C:\Windows\Fonts") / "mingliu.ttc", 0),
+        (Path(r"C:\Windows\Fonts") / "kaiu.ttf", 0),
+        (Path(r"C:\Windows\Fonts") / "arialuni.ttf", 0),
+        (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), 0),
+        (Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"), 0),
+    ]
+    for candidate, index in candidates:
+        if not candidate.exists():
+            continue
+        try:
+            return ImageFont.truetype(str(candidate), size=size, index=index)
+        except OSError:
             try:
                 return ImageFont.truetype(str(candidate), size=size)
             except OSError:
@@ -257,25 +425,39 @@ def draw_boxed_image(
     img.save(out_path, format="JPEG", quality=90)
 
 
+def _dish_entry(item: dict) -> dict:
+    """單一菜色存檔格式（含 bbox，供之後用 canvas 重畫標註）。"""
+    code = item.get("dish_code")
+    raw_id = code if code is not None else item.get("dish_id")
+    entry: dict = {
+        "dish_id": "" if raw_id is None else str(raw_id),
+        "dish_name": item.get("name") or "",
+        "confidence": round(float(item.get("confidence") or 0), 2),
+        "reason": item.get("reason") or None,
+        "bbox": item.get("bbox"),
+    }
+    alt = item.get("alternative")
+    if isinstance(alt, dict) and alt.get("name"):
+        alt_code = alt.get("dish_code")
+        alt_raw = alt_code if alt_code is not None else alt.get("dish_id")
+        entry["alternative"] = {
+            "dish_id": "" if alt_raw is None else str(alt_raw),
+            "dish_name": alt.get("name") or "",
+            "confidence": round(float(alt.get("confidence") or 0), 2),
+            "reason": alt.get("reason") or None,
+        }
+    return entry
+
+
 def build_result_json(predictions: list[dict], dish_by_id: dict) -> dict:
-    # 組出要存檔的 JSON（meal_type + dishes）
+    # 組出要存檔的 JSON（meal_type + dishes，含 bbox／reason）
     meal_types = []
     dishes_out = []
     for item in predictions:
         dish = dish_by_id.get(item.get("dish_id"))
         if dish and dish.meal_type:
             meal_types.append(dish.meal_type)
-
-        # JSON 的 dish_id 用菜色編號（沒有則用資料庫 id），字串格式
-        code = item.get("dish_code")
-        raw_id = code if code is not None else item.get("dish_id")
-        dishes_out.append(
-            {
-                "dish_id": "" if raw_id is None else str(raw_id),
-                "dish_name": item.get("name") or "",
-                "confidence": round(float(item.get("confidence") or 0), 2),
-            }
-        )
+        dishes_out.append(_dish_entry(item))
 
     meal_type = ""
     if meal_types:
@@ -390,10 +572,10 @@ def save_recognition_bundle(
             alt_preds,
             dish_by_id,
         )
-        # 根目錄仍寫主解釋，方便直接瀏覽
+        # 根目錄寫完整結果（含 alternative + bbox），方便紀錄頁 canvas 重畫
         boxed_path = session_dir / "result_boxed.jpg"
         draw_boxed_image(original_path, primary_preds, boxed_path)
-        payload = build_result_json(primary_preds, dish_by_id)
+        payload = build_result_json(predictions, dish_by_id)
         (session_dir / "result.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",

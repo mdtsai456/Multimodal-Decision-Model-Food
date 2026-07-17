@@ -96,10 +96,10 @@ def _build_prompt(catalog: str) -> str:
 3. 請「逐格」檢查分格餐盤：每一格都要看，且同一格可能同時有 2 道以上菜色（左右並排、上下堆疊都算）。
 4. 顏色相近、同為燉煮/醬燒外觀的菜色（例如醬燒冬瓜與醬燒蘿蔔）常被誤判。若烹調方式相同、僅主食材不同，且畫面上看不出清楚差異，兩者 confidence 應接近（差距通常 < 0.2），不要把最佳拉到 0.95+、次佳壓到 0.6 以下。
 5. 若畫面明顯只有一道菜，請精準對到最吻合外觀特徵的那一道，不要硬湊其他菜。
-6. 一張餐盤也可能有多道菜，請全部列出，不要過早停止；但也不可為了湊數而亂猜。
+6. 一張餐盤也可能有多道菜，請全部列出，不要過早停止；但也不可為了湊數而亂猜。盤上實際出現的每一格／每一道都要有一筆 predictions，不可因為某道已當過別道的 alternative 就省略。
 7. 每道菜給 confidence（0~1 浮點數）；外觀特徵吻合度高才給高分。若最佳與次佳外觀極相似，請避免過度自信。
 8. 每道菜都要給 bbox（緊貼該道「食物」的外框）。
-9. 【強制次佳候選】每一筆預測都「必須」提供 alternative：針對「同一個 bbox 位置」從候選菜單另選一道最像的次佳菜（不可與 name 相同）。name 放信心最高者，alternative 放第二高者，並各自給 confidence。後端會依信心差決定是否採用；你仍必須每次都給出 alternative，不可省略。
+9. 【強制次佳候選】每一筆預測都「必須」提供 alternative：針對「同一個 bbox 位置」從候選菜單另選一道最像的次佳菜（不可與 name 相同）。name 放信心最高者，alternative 放第二高者，並各自給 confidence。後端會依信心差決定是否採用；你仍必須每次都給出 alternative，不可省略。alternative 只表示「同位置的次佳猜測」，不能取代其他格子裡真正出現的菜。
 10. 若幾乎無法判斷，可回傳空陣列。
 11. 只輸出 JSON，不要其他說明文字。
 
@@ -146,7 +146,7 @@ def _ask_model(prompt: str, media_type: str, image_b64: str) -> str:
     client = OpenAI(base_url=BASE_URL, api_key=API_KEY)
     res = client.chat.completions.create(
         model=MODEL,
-        max_tokens=2048,
+        max_tokens=4096,
         temperature=0,
         messages=[
             {
@@ -164,7 +164,11 @@ def _ask_model(prompt: str, media_type: str, image_b64: str) -> str:
             }
         ],
     )
-    return (res.choices[0].message.content or "").strip()
+    choice = res.choices[0]
+    finish = getattr(choice, "finish_reason", None)
+    if finish == "length":
+        print("[debug] 模型輸出被 max_tokens 截斷，可能漏菜；請再試一次或簡化菜單")
+    return (choice.message.content or "").strip()
 
 
 # 把模型回的一道預測，對回資料庫裡真正的 Dish
@@ -406,7 +410,7 @@ def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
     parsed = _extract_json(raw_text)
 
     predictions = []
-    seen = set()  # 同一道菜只留一次，結果裡只出現一次，避免重複
+    seen = set()  # 同一道「主預測」只留一次；次佳不佔名額，避免漏掉盤上其他真菜
     for item in parsed.get("predictions", []):
         dish = _match_dish(item, dishes)
         if not dish or dish.id in seen:
@@ -423,8 +427,8 @@ def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
         )
         if second:
             pred["second_best"] = second
-            # 次佳菜也標記為已出現，避免後面又當獨立一道菜
-            seen.add(second["dish_id"])
+            # 注意：不可把 second 加入 seen。
+            # 否則若 A 的次佳是 B，而 B 也實際出現在別格，B 會被整筆丟掉（terra 漏菜常見原因）。
             alt = _maybe_adopt_alternative(pred["name"], pred["confidence"], second)
             if alt:
                 pred["alternative"] = alt
@@ -438,5 +442,6 @@ def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
     # 信心高的排前面，再合併重疊且信心相近的獨立兩筆
     predictions.sort(key=lambda x: x["confidence"], reverse=True)
     predictions = _merge_overlapping_close_pairs(predictions)
+    print(f"[debug] 主預測共 {len(predictions)} 道: {[p.get('name') for p in predictions]}")
     _debug_print_close_candidates(predictions)
     return {"predictions": predictions, "model": MODEL, "raw": raw_text}

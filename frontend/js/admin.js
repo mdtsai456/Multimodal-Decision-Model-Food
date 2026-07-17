@@ -290,11 +290,12 @@ excelInput.addEventListener("change", async () => {
 // --- 記錄管理 ---
 function renderHalf(item, color) {
   const code = item.dish_id ? `編號 ${escapeHtml(item.dish_id)}` : "—";
+  const reason = item.reason ? ` · ${escapeHtml(item.reason)}` : "";
   return `
     <div class="result-half" style="border-left-color:${color}">
       <div>
         <div class="result-name">${escapeHtml(item.dish_name)}</div>
-        <div class="result-meta">${code}</div>
+        <div class="result-meta">${code}${reason}</div>
       </div>
       <div class="confidence" style="color:${color}">${pct(item.confidence)}</div>
       <div class="confidence-bar"><span style="width:${pct(item.confidence)};background:${color}"></span></div>
@@ -302,12 +303,78 @@ function renderHalf(item, color) {
   `;
 }
 
+function dishesHaveBbox(dishes) {
+  return (dishes || []).some(
+    (d) => Array.isArray(d.bbox) && d.bbox.length === 4
+  );
+}
+
+/** 與辨識頁相同：在 canvas 依顯示尺寸重畫外框與繁中菜名 */
+function paintRecordCanvas(canvas, originalUrl, dishes) {
+  const img = new Image();
+  img.onload = () => {
+    const wrap = canvas.parentElement;
+    const maxW = Math.min(420, wrap?.clientWidth || 420);
+    const scale = Math.min(1, maxW / img.width);
+    const w = Math.round(img.width * scale);
+    const h = Math.round(img.height * scale);
+
+    canvas.width = w;
+    canvas.height = h;
+    canvas.classList.remove("hidden");
+
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+
+    dishes.forEach((item, index) => {
+      const box = item.bbox;
+      if (!Array.isArray(box) || box.length !== 4) return;
+
+      const [x, y, bw, bh] = box;
+      const color = colorForIndex(index, dishes.length);
+      const px = x * w;
+      const py = y * h;
+      const pw = bw * w;
+      const ph = bh * h;
+
+      ctx.lineWidth = Math.max(2, Math.round(w / 220));
+      ctx.strokeStyle = color;
+      ctx.strokeRect(px, py, pw, ph);
+
+      const alt = item.alternative;
+      const label = alt?.dish_name
+        ? `${item.dish_name || ""}／${alt.dish_name}`
+        : item.dish_name || "";
+      if (!label) return;
+
+      ctx.font = `600 ${Math.max(12, Math.round(w / 40))}px "Noto Sans TC", sans-serif`;
+      const pad = 6;
+      const tw = ctx.measureText(label).width;
+      const th = Math.max(16, Math.round(w / 36));
+      const ly = Math.max(0, py - th - 4);
+      ctx.fillStyle = color;
+      ctx.fillRect(px, ly, tw + pad * 2, th + 4);
+      ctx.fillStyle = "#fff";
+      ctx.fillText(label, px + pad, ly + th - 2);
+    });
+  };
+  img.src = originalUrl;
+}
+
 function renderRecordDetail(detail) {
   const dishes = detail.dishes || [];
   const bust = Date.now();
+  const canCanvas = Boolean(detail.original_url) && dishesHaveBbox(dishes);
   let imageHtml = "";
 
-  if (detail.has_dual && detail.boxed1_url && detail.boxed2_url) {
+  if (canCanvas) {
+    // 與餐盤辨識頁相同：用原圖 + bbox 在 canvas 重畫（繁中清晰）
+    imageHtml = `
+      <div class="result-image-wrap">
+        <canvas class="result-canvas record-result-canvas" aria-label="辨識結果標註圖"></canvas>
+      </div>`;
+  } else if (detail.has_dual && detail.boxed1_url && detail.boxed2_url) {
     imageHtml = `
       <div class="result-boxed-pair">
         <figure class="result-boxed-fig">
@@ -339,11 +406,12 @@ function renderRecordDetail(detail) {
           </article>`;
       }
       const code = item.dish_id ? `編號 ${escapeHtml(item.dish_id)}` : "—";
+      const reason = item.reason ? ` · ${escapeHtml(item.reason)}` : "";
       return `
         <article class="result-card" style="border-left:4px solid ${color};animation-delay:${index * 60}ms">
           <div>
             <div class="result-name">${escapeHtml(item.dish_name)}</div>
-            <div class="result-meta">${code}</div>
+            <div class="result-meta">${code}${reason}</div>
           </div>
           <div class="confidence" style="color:${color}">${pct(item.confidence)}</div>
           <div class="confidence-bar"><span style="width:${pct(item.confidence)};background:${color}"></span></div>
@@ -359,7 +427,8 @@ function renderRecordDetail(detail) {
     ? `<p class="model-tag">餐別：${escapeHtml(detail.meal_type)}</p>`
     : "";
 
-  return `
+  return {
+    html: `
     <div class="record-detail results-panel">
       <div class="results-head">
         <h2>辨識結果</h2>
@@ -368,7 +437,11 @@ function renderRecordDetail(detail) {
       ${imageHtml}
       <div class="results-list">${cards}</div>
       ${empty}
-    </div>`;
+    </div>`,
+    canCanvas,
+    originalUrl: detail.original_url,
+    dishes,
+  };
 }
 
 async function loadRecords(date) {
@@ -457,7 +530,14 @@ recordsList.addEventListener("click", async (e) => {
       headers: authHeaders(),
     });
     if (expandedRecordId !== id) return;
-    body.innerHTML = renderRecordDetail(detail);
+    const painted = renderRecordDetail(detail);
+    body.innerHTML = painted.html;
+    if (painted.canCanvas) {
+      const canvas = body.querySelector(".record-result-canvas");
+      if (canvas) {
+        paintRecordCanvas(canvas, painted.originalUrl, painted.dishes);
+      }
+    }
   } catch (err) {
     if (expandedRecordId !== id) return;
     body.innerHTML = `<p class="empty">${escapeHtml(err.message)}</p>`;
