@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Outfit:wght@500;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css" />
+  <link rel="stylesheet" href="/css/styles.css?v=close-pair-3" />
 </head>
 <body>
   <div class="page-bg"></div>
@@ -43,6 +43,16 @@
       </div>
       <div class="result-image-wrap">
         <canvas id="result-canvas" class="result-canvas hidden" aria-label="辨識結果標註圖"></canvas>
+        <div id="result-boxed-pair" class="result-boxed-pair hidden">
+          <figure class="result-boxed-fig">
+            <img id="result-boxed-1" class="result-boxed-img" alt="result1 標註圖" />
+            <figcaption>result1</figcaption>
+          </figure>
+          <figure class="result-boxed-fig">
+            <img id="result-boxed-2" class="result-boxed-img" alt="result2 標註圖" />
+            <figcaption>result2</figcaption>
+          </figure>
+        </div>
       </div>
       <img id="result-image" class="result-image hidden" alt="" hidden />
       <div id="results-list" class="results-list"></div>
@@ -51,6 +61,6 @@
   </main>
 
   <div id="toast" class="toast hidden"></div>
-  <script src="/js/app.js"></script>
+  <script src="/js/app.js?v=close-pair-2"></script>
 </body>
 </html>

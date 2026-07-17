@@ -17,6 +17,8 @@ from .models import Dish
 API_KEY = os.getenv("ZEABUR_AI_HUB_API_KEY", "")
 BASE_URL = os.getenv("ZEABUR_AI_HUB_BASE_URL", "https://hnd1.aihub.zeabur.ai/")
 MODEL = os.getenv("AI_MODEL", "gpt-5.6-luna")
+# 兩道候選信心差 ≤ 此值時視為「相近」，前端拆成雙條、後端存 result1/result2
+CLOSE_CONFIDENCE_DELTA = float(os.getenv("CLOSE_CONFIDENCE_DELTA", "0.30"))
 
 
 # 依檔名猜測圖片 MIME 類型；猜不到就當 jpeg
@@ -91,33 +93,44 @@ def _build_prompt(catalog: str) -> str:
 1. 只能從候選菜單中選擇，不可發明不存在的菜名。
 2. 請優先比對每道菜的「AI烹調方式/外觀特徵」與「組成」：顏色、質地、醬汁、形狀、切法、是否有配菜等，不要只看菜名。
 3. 請「逐格」檢查分格餐盤：每一格都要看，且同一格可能同時有 2 道以上菜色（左右並排、上下堆疊都算）。
-4. 顏色相近、同為燉煮/醬燒外觀的菜色（例如醬燒冬瓜與番茄豆包）常被誤併成一道，請依外觀特徵分開判斷。
+4. 顏色相近、同為燉煮/醬燒外觀的菜色（例如醬燒冬瓜與醬燒蘿蔔、番茄豆包）常被誤併或誤判，請依外觀特徵仔細區分。
 5. 若畫面明顯只有一道菜，請精準對到最吻合外觀特徵的那一道，不要硬湊其他菜。
 6. 一張餐盤也可能有多道菜，請全部列出，不要過早停止；但也不可為了湊數而亂猜。
 7. 每道菜給 confidence（0~1 浮點數）；外觀特徵吻合度高才給高分。
-8. 每道菜都要給 bbox（大概外框即可）。
-9. 若幾乎無法判斷，可回傳空陣列。
-10. 只輸出 JSON，不要其他說明文字。
+8. 每道菜都要給 bbox（緊貼該道「食物」的外框）。
+9. 【強制次佳候選】每一筆預測都「必須」提供 alternative：針對「同一個 bbox 位置」從候選菜單另選一道最像的次佳菜（不可與 name 相同）。name 放信心最高者，alternative 放第二高者，並各自給 confidence。後端會依信心差決定是否採用；你仍必須每次都給出 alternative，不可省略。
+10. 若幾乎無法判斷，可回傳空陣列。
+11. 只輸出 JSON，不要其他說明文字。
 
-JSON 格式：
+JSON 格式（alternative 為必填；bbox 用左上＋右下角點）：
 {{
   "predictions": [
     {{
-      "name": "菜名（必須與候選菜單完全一致）",
+      "name": "最佳菜名（必須與候選菜單完全一致）",
       "dish_id": 123,
       "dish_code": 6,
       "confidence": 0.92,
       "reason": "簡短理由（對應到哪個外觀特徵）",
-      "bbox": [0.12, 0.20, 0.35, 0.28]
+      "bbox": [0.12, 0.48, 0.40, 0.82],
+      "alternative": {{
+        "name": "次佳菜名（必填，須與 name 不同）",
+        "dish_id": 124,
+        "dish_code": 7,
+        "confidence": 0.88,
+        "reason": "簡短理由"
+      }}
     }}
   ]
 }}
 
-bbox 說明（務必提供）：
-- 格式 [x, y, w, h]，皆為相對整張圖片的 0～1 小數
-- x,y = 外框左上角；w,h = 寬與高
-- 框出該道菜「大概」範圍即可，同一格有兩道菜時請分開框
-- 座標以整張照片為準（含餐盤外背景），不要只用餐盤內部座標系
+bbox 說明（務必正確，常見錯誤會害下排框飄到上排）：
+- 格式 [x1, y1, x2, y2]：左上角 (x1,y1) 與右下角 (x2,y2)，皆為相對「整張照片」的 0～1
+- 原點在「整張圖」左上；y 愈大愈靠下（不是餐盤內座標）
+- 框要包住該道菜的食物像素，可略含醬汁／邊緣；不要框到上方空格或隔壁格
+- 分格餐盤「下排」的菜：y1、y2 都必須明顯偏大（通常 y1 約在 0.45～0.70，y2 接近該格底部）；禁止把下排框畫在上排格子裡
+- 分格餐盤「上排」的菜：y2 通常應小於約 0.55，不要拉到下排
+- 同一格有兩道菜時請左右分開框，但仍要對準食物高度
+- alternative 與主預測共用同一 bbox，不要為 alternative 另開一筆 predictions
 
 候選菜單（含 AI 烹調方式敘述，請用來比對外觀）：
 {catalog}
@@ -173,29 +186,195 @@ def _match_dish(item: dict, dishes: list[Dish]) -> Dish | None:
 
 
 # 把模型回的 bbox 正規化成 [x,y,w,h]（0～1）；不合理就回 None
+# 新格式優先：[x1,y1,x2,y2]；若不像角點則退回舊格式 [x,y,w,h]
 def _normalize_bbox(raw) -> list[float] | None:
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
         return None
     try:
-        x, y, w, h = [float(v) for v in raw]
+        a, b, c, d = [float(v) for v in raw]
     except (TypeError, ValueError):
         return None
     # 若模型誤傳成像素很大，粗略當成已是相對座標失敗
-    if max(x, y, w, h) > 1.5:
+    if max(a, b, c, d) > 1.5:
         return None
-    x = max(0.0, min(1.0, x))
-    y = max(0.0, min(1.0, y))
-    w = max(0.0, min(1.0 - x, w))
-    h = max(0.0, min(1.0 - y, h))
-    if w < 0.02 or h < 0.02: # 太小的框忽略
+
+    # x2>x1 且 y2>y1 → 視為角點格式
+    if c > a and d > b:
+        x1, y1, x2, y2 = a, b, c, d
+    else:
+        # 舊格式 [x, y, w, h]
+        x1, y1, x2, y2 = a, b, a + c, b + d
+
+    x1 = max(0.0, min(1.0, x1))
+    y1 = max(0.0, min(1.0, y1))
+    x2 = max(0.0, min(1.0, x2))
+    y2 = max(0.0, min(1.0, y2))
+    if x2 <= x1 or y2 <= y1:
         return None
-    return [round(x, 4), round(y, 4), round(w, 4), round(h, 4)]
+    w = x2 - x1
+    h = y2 - y1
+    if w < 0.02 or h < 0.02:  # 太小的框忽略
+        return None
+    return [round(x1, 4), round(y1, 4), round(w, 4), round(h, 4)]
+
+
+def _ensure_upright_image(path: Path) -> None:
+    """依 EXIF 轉正並覆寫檔案，讓模型看圖與畫框用同一像素方向。"""
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as img:
+        oriented = ImageOps.exif_transpose(img)
+        # 轉成 RGB 存回，去掉方向標記造成的錯位
+        rgb = oriented.convert("RGB")
+        suffix = path.suffix.lower()
+        if suffix in {".png", ".webp", ".gif"}:
+            rgb.save(path)
+        else:
+            rgb.save(path, format="JPEG", quality=92)
+
+
+def _prediction_core(dish: Dish, item: dict, bbox: list[float] | None) -> dict:
+    conf = max(0.0, min(1.0, float(item.get("confidence", 0))))
+    return {
+        "name": dish.name,
+        "dish_id": dish.id,
+        "dish_code": dish.dish_code,
+        "confidence": conf,
+        "reason": item.get("reason"),
+        "bbox": bbox,
+    }
+
+
+def _parse_alternative(
+    raw_alt,
+    dishes: list[Dish],
+    primary_name: str,
+    primary_id: int,
+    primary_conf: float,
+    bbox: list[float] | None,
+) -> dict | None:
+    """解析次佳候選；信心不相近或與主菜相同則忽略。"""
+    if not isinstance(raw_alt, dict):
+        print(f"[debug] {primary_name}: 模型未給 alternative → 略過")
+        return None
+    alt_dish = _match_dish(raw_alt, dishes)
+    if not alt_dish:
+        print(f"[debug] {primary_name}: alternative 對不到菜單 → 略過")
+        return None
+    if alt_dish.id == primary_id:
+        print(f"[debug] {primary_name}: alternative 與主菜相同 → 略過")
+        return None
+    alt = _prediction_core(alt_dish, raw_alt, bbox)
+    delta = abs(alt["confidence"] - primary_conf)
+    if delta > CLOSE_CONFIDENCE_DELTA:
+        print(
+            f"[debug] {primary_name} ({primary_conf:.2f}) / "
+            f"{alt['name']} ({alt['confidence']:.2f}) "
+            f"信心差 {delta:.2f} > {CLOSE_CONFIDENCE_DELTA} → 不採用 alternative"
+        )
+        return None
+    # alternative 不帶 bbox（與主預測共用）
+    return {
+        "name": alt["name"],
+        "dish_id": alt["dish_id"],
+        "dish_code": alt["dish_code"],
+        "confidence": alt["confidence"],
+        "reason": alt["reason"],
+    }
+
+
+def _bbox_iou(a: list[float] | None, b: list[float] | None) -> float:
+    if not a or not b or len(a) != 4 or len(b) != 4:
+        return 0.0
+    ax1, ay1 = a[0], a[1]
+    ax2, ay2 = a[0] + a[2], a[1] + a[3]
+    bx1, by1 = b[0], b[1]
+    bx2, by2 = b[0] + b[2], b[1] + b[3]
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+    inter = iw * ih
+    if inter <= 0:
+        return 0.0
+    union = a[2] * a[3] + b[2] * b[3] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
+    """
+    後備：若模型把相近兩道菜拆成兩筆且 bbox 重疊、信心相近，
+    合併為一筆主預測 + alternative。
+    """
+    if len(predictions) < 2:
+        return predictions
+
+    used = set()
+    merged: list[dict] = []
+    for i, a in enumerate(predictions):
+        if i in used:
+            continue
+        pair_j = None
+        for j in range(i + 1, len(predictions)):
+            if j in used:
+                continue
+            b = predictions[j]
+            if a.get("alternative") or b.get("alternative"):
+                continue
+            if abs(a["confidence"] - b["confidence"]) > CLOSE_CONFIDENCE_DELTA:
+                continue
+            if _bbox_iou(a.get("bbox"), b.get("bbox")) < 0.45:
+                continue
+            pair_j = j
+            break
+
+        if pair_j is None:
+            merged.append(a)
+            continue
+
+        b = predictions[pair_j]
+        used.add(pair_j)
+        primary, secondary = (a, b) if a["confidence"] >= b["confidence"] else (b, a)
+        primary = dict(primary)
+        primary["alternative"] = {
+            "name": secondary["name"],
+            "dish_id": secondary["dish_id"],
+            "dish_code": secondary["dish_code"],
+            "confidence": secondary["confidence"],
+            "reason": secondary.get("reason"),
+        }
+        print(
+            f"[debug] bbox 合併相近候選: "
+            f"{primary['name']} ({primary['confidence']:.2f}) / "
+            f"{secondary['name']} ({secondary['confidence']:.2f})"
+        )
+        merged.append(primary)
+
+    merged.sort(key=lambda x: x["confidence"], reverse=True)
+    return merged
+
+
+def _debug_print_close_candidates(predictions: list[dict]) -> None:
+    """印出最終保留的相近雙候選，方便對照前端雙條與 result1/result2。"""
+    pairs = [p for p in predictions if p.get("alternative")]
+    if not pairs:
+        print("[debug] 相近候選: 無")
+        return
+    for p in pairs:
+        alt = p["alternative"]
+        print(
+            f"[debug] 相近候選: "
+            f"{p.get('name')} ({float(p.get('confidence') or 0):.2f}) / "
+            f"{alt.get('name')} ({float(alt.get('confidence') or 0):.2f})"
+        )
 
 
 # 主流程：圖片 + 菜單 → 呼叫模型 → 整理成 predictions
 def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
     if not dishes:
         return {"predictions": [], "model": MODEL, "raw": "菜單為空"}
+
+    # 先轉正方向，再送模型（與之後畫框一致）
+    _ensure_upright_image(image_path)
 
     # 圖片轉 base64 字串
     image_b64 = base64.standard_b64encode(image_path.read_bytes()).decode("ascii")
@@ -215,19 +394,29 @@ def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
         if not dish or dish.id in seen:
             continue
         seen.add(dish.id)
-        # confidence 強制夾在 0～1
-        conf = max(0.0, min(1.0, float(item.get("confidence", 0))))
-        predictions.append(
-            {
-                "name": dish.name,
-                "dish_id": dish.id,
-                "dish_code": dish.dish_code,
-                "confidence": conf,
-                "reason": item.get("reason"),
-                "bbox": _normalize_bbox(item.get("bbox")),
-            }
+        bbox = _normalize_bbox(item.get("bbox"))
+        pred = _prediction_core(dish, item, bbox)
+        alt = _parse_alternative(
+            item.get("alternative"),
+            dishes,
+            pred["name"],
+            dish.id,
+            pred["confidence"],
+            bbox,
         )
+        if alt:
+            # 次佳菜也標記為已出現，避免後面又當獨立一道菜
+            seen.add(alt["dish_id"])
+            pred["alternative"] = alt
+            print(
+                f"[debug] 採用相近候選: "
+                f"{pred['name']} ({pred['confidence']:.2f}) / "
+                f"{alt['name']} ({alt['confidence']:.2f})"
+            )
+        predictions.append(pred)
 
-    # 信心高的排前面
+    # 信心高的排前面，再合併重疊且信心相近的獨立兩筆
     predictions.sort(key=lambda x: x["confidence"], reverse=True)
+    predictions = _merge_overlapping_close_pairs(predictions)
+    _debug_print_close_candidates(predictions)
     return {"predictions": predictions, "model": MODEL, "raw": raw_text}

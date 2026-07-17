@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import json
+import shutil
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 
 def colors_for_count(n: int) -> list[tuple[int, int, int]]:
@@ -73,8 +74,8 @@ def draw_boxed_image(
     predictions: list[dict],
     out_path: Path,
 ) -> None:
-    # 在原圖上畫出每道菜的大概外框與菜名
-    img = Image.open(source_path).convert("RGB")
+    # 在原圖上畫出每道菜的大概外框與菜名（與辨識時相同：先依 EXIF 轉正）
+    img = ImageOps.exif_transpose(Image.open(source_path)).convert("RGB")
     draw = ImageDraw.Draw(img)
     w, h = img.size
     font = _load_font(w)
@@ -139,6 +140,70 @@ def build_result_json(predictions: list[dict], dish_by_id: dict) -> dict:
     return {"meal_type": meal_type, "dishes": dishes_out}
 
 
+def _strip_alternatives(predictions: list[dict]) -> list[dict]:
+    """主解釋：只保留每筆的主候選（不含 alternative 欄位）。"""
+    out = []
+    for item in predictions:
+        out.append(
+            {
+                "name": item.get("name"),
+                "dish_id": item.get("dish_id"),
+                "dish_code": item.get("dish_code"),
+                "confidence": item.get("confidence"),
+                "reason": item.get("reason"),
+                "bbox": item.get("bbox"),
+            }
+        )
+    return out
+
+
+def _apply_alternatives(predictions: list[dict]) -> list[dict]:
+    """次解釋：有 alternative 的位置改用次佳候選。"""
+    out = []
+    for item in predictions:
+        alt = item.get("alternative")
+        if alt:
+            out.append(
+                {
+                    "name": alt.get("name"),
+                    "dish_id": alt.get("dish_id"),
+                    "dish_code": alt.get("dish_code"),
+                    "confidence": alt.get("confidence"),
+                    "reason": alt.get("reason"),
+                    "bbox": item.get("bbox"),
+                }
+            )
+        else:
+            out.append(
+                {
+                    "name": item.get("name"),
+                    "dish_id": item.get("dish_id"),
+                    "dish_code": item.get("dish_code"),
+                    "confidence": item.get("confidence"),
+                    "reason": item.get("reason"),
+                    "bbox": item.get("bbox"),
+                }
+            )
+    return out
+
+
+def _write_bundle_files(
+    dest_dir: Path,
+    original_path: Path,
+    original_name: str,
+    predictions: list[dict],
+    dish_by_id: dict,
+) -> None:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(original_path, dest_dir / original_name)
+    draw_boxed_image(original_path, predictions, dest_dir / "result_boxed.jpg")
+    payload = build_result_json(predictions, dish_by_id)
+    (dest_dir / "result.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
 def save_recognition_bundle(
     upload_root: Path,
     source_path: Path,
@@ -150,21 +215,52 @@ def save_recognition_bundle(
     1. original.*  上傳原圖
     2. result_boxed.jpg  有外框的結果圖
     3. result.json  辨識結果
+
+    若有信心相近的雙候選，另建 result1/、result2/，
+    各存一份原圖、標註圖、JSON（result1=主候選，result2=次佳候選）。
     """
     session_dir = make_session_dir(upload_root)
 
     suffix = source_path.suffix.lower() or ".jpg"
-    original_path = session_dir / f"original{suffix}"
+    original_name = f"original{suffix}"
+    original_path = session_dir / original_name
     # 原圖移入資料夾（不再留在 uploads 根目錄）
     source_path.replace(original_path)
 
-    boxed_path = session_dir / "result_boxed.jpg"
-    draw_boxed_image(original_path, predictions, boxed_path)
+    primary_preds = _strip_alternatives(predictions)
+    has_close = any(item.get("alternative") for item in predictions)
 
-    payload = build_result_json(predictions, dish_by_id)
-    json_path = session_dir / "result.json"
-    json_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    if has_close:
+        alt_preds = _apply_alternatives(predictions)
+        _write_bundle_files(
+            session_dir / "result1",
+            original_path,
+            original_name,
+            primary_preds,
+            dish_by_id,
+        )
+        _write_bundle_files(
+            session_dir / "result2",
+            original_path,
+            original_name,
+            alt_preds,
+            dish_by_id,
+        )
+        # 根目錄仍寫主解釋，方便直接瀏覽
+        boxed_path = session_dir / "result_boxed.jpg"
+        draw_boxed_image(original_path, primary_preds, boxed_path)
+        payload = build_result_json(primary_preds, dish_by_id)
+        (session_dir / "result.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    else:
+        boxed_path = session_dir / "result_boxed.jpg"
+        draw_boxed_image(original_path, primary_preds, boxed_path)
+        payload = build_result_json(primary_preds, dish_by_id)
+        (session_dir / "result.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
     return session_dir

@@ -9,6 +9,9 @@ const predictBtn = document.getElementById("predict-btn");
 const predictForm = document.getElementById("predict-form");
 const resultsPanel = document.getElementById("results-panel"); // 結果整塊區塊
 const resultCanvas = document.getElementById("result-canvas"); // 結果圖 + 外框
+const resultBoxedPair = document.getElementById("result-boxed-pair");
+const resultBoxed1 = document.getElementById("result-boxed-1");
+const resultBoxed2 = document.getElementById("result-boxed-2");
 const resultsList = document.getElementById("results-list");   // 結果卡片列表
 const emptyResult = document.getElementById("empty-result");   // 沒辨到菜時的提示
 const modelTag = document.getElementById("model-tag");         // 顯示目前模型名稱
@@ -21,6 +24,13 @@ function colorForIndex(index, total) {
   const n = Math.max(total, 1);
   const hue = Math.round((index * 360) / n) % 360;
   return `hsl(${hue}, 58%, 40%)`;
+}
+
+// 雙候選右側用略偏的色相，與左側區隔
+function altColorForIndex(index, total) {
+  const n = Math.max(total, 1);
+  const hue = Math.round((index * 360) / n + 28) % 360;
+  return `hsl(${hue}, 52%, 38%)`;
 }
 
 // 畫面底部短暫提示訊息
@@ -46,6 +56,7 @@ function setPreview(file) {
     preview.classList.add("hidden");
     preview.removeAttribute("src");
     resultCanvas.classList.add("hidden");
+    hideBoxedPair();
     return;
   }
   previewUrl = URL.createObjectURL(file); // 本機預覽，不用靠伺服器存檔
@@ -128,8 +139,11 @@ function drawResultImage(items) {
       ctx.strokeStyle = color;
       ctx.strokeRect(px, py, pw, ph);
 
-      // 標籤只顯示菜名
-      const label = item.name || "";
+      // 有相近候選時標籤並排顯示兩個菜名
+      const alt = getAlternative(item);
+      const label = alt
+        ? `${item.name || ""}／${alt.name}`
+        : item.name || "";
       ctx.font = `600 ${Math.max(12, Math.round(w / 40))}px "Noto Sans TC", sans-serif`;
       const pad = 6;
       const tw = ctx.measureText(label).width;
@@ -145,6 +159,51 @@ function drawResultImage(items) {
   img.src = previewUrl;
 }
 
+function halfMeta(item) {
+  const code = item.dish_code != null ? `編號 ${item.dish_code}` : "—";
+  const reason = item.reason ? ` · ${escapeHtml(item.reason)}` : "";
+  return `${code}${reason}`;
+}
+
+function getAlternative(item) {
+  const alt = item?.alternative;
+  if (!alt || typeof alt !== "object") return null;
+  if (!alt.name) return null;
+  return alt;
+}
+
+function renderHalf(item, color) {
+  return `
+    <div class="result-half" style="border-left-color:${color}">
+      <div>
+        <div class="result-name">${escapeHtml(item.name)}</div>
+        <div class="result-meta">${halfMeta(item)}</div>
+      </div>
+      <div class="confidence" style="color:${color}">${pct(item.confidence)}</div>
+      <div class="confidence-bar"><span style="width:${pct(item.confidence)};background:${color}"></span></div>
+    </div>
+  `;
+}
+
+function showBoxedPair(resultDir) {
+  if (!resultDir || !resultBoxedPair) {
+    resultCanvas.classList.remove("hidden");
+    resultBoxedPair?.classList.add("hidden");
+    return;
+  }
+  const bust = Date.now();
+  resultBoxed1.src = `/uploads/${encodeURIComponent(resultDir)}/result1/result_boxed.jpg?t=${bust}`;
+  resultBoxed2.src = `/uploads/${encodeURIComponent(resultDir)}/result2/result_boxed.jpg?t=${bust}`;
+  resultBoxedPair.classList.remove("hidden");
+  resultCanvas.classList.add("hidden");
+}
+
+function hideBoxedPair() {
+  resultBoxedPair?.classList.add("hidden");
+  if (resultBoxed1) resultBoxed1.removeAttribute("src");
+  if (resultBoxed2) resultBoxed2.removeAttribute("src");
+}
+
 // 把後端辨識結果畫成卡片，並在圖上框出每道菜
 function renderResults(data) {
   resultsPanel.hidden = false;
@@ -152,26 +211,46 @@ function renderResults(data) {
   resultsList.innerHTML = "";
 
   const items = data.predictions || [];
+  const closePairs = items.filter((item) => getAlternative(item));
+  console.log("[debug] predictions", items);
+  console.log(
+    "[debug] close pairs",
+    closePairs.map((p) => `${p.name} (${p.confidence}) / ${p.alternative.name} (${p.alternative.confidence})`)
+  );
+
   emptyResult.classList.toggle("hidden", items.length > 0);
-  drawResultImage(items);
+
+  if (closePairs.length > 0 && data.result_dir) {
+    // 有相近雙候選：顯示後端存的 result1 / result2 標註圖
+    showBoxedPair(data.result_dir);
+  } else {
+    hideBoxedPair();
+    drawResultImage(items);
+  }
 
   items.forEach((item, index) => {
     const color = colorForIndex(index, items.length);
     const card = document.createElement("article");
-    card.className = "result-card";
     card.style.animationDelay = `${index * 60}ms`;
-    card.style.borderLeft = `4px solid ${color}`;
-    card.innerHTML = `
-      <div>
-        <div class="result-name">${escapeHtml(item.name)}</div>
-        <div class="result-meta">
-          ${item.dish_code != null ? `編號 ${item.dish_code}` : "—"}
-          ${item.reason ? ` · ${escapeHtml(item.reason)}` : ""}
+    const alt = getAlternative(item);
+
+    if (alt) {
+      // 信心相近：左右各半條（例如 醬燒蘿蔔 | 醬燒冬瓜）
+      const colorAlt = altColorForIndex(index, items.length);
+      card.className = "result-card result-card--split";
+      card.innerHTML = renderHalf(item, color) + renderHalf(alt, colorAlt);
+    } else {
+      card.className = "result-card";
+      card.style.borderLeft = `4px solid ${color}`;
+      card.innerHTML = `
+        <div>
+          <div class="result-name">${escapeHtml(item.name)}</div>
+          <div class="result-meta">${halfMeta(item)}</div>
         </div>
-      </div>
-      <div class="confidence" style="color:${color}">${pct(item.confidence)}</div>
-      <div class="confidence-bar"><span style="width:${pct(item.confidence)};background:${color}"></span></div>
-    `;
+        <div class="confidence" style="color:${color}">${pct(item.confidence)}</div>
+        <div class="confidence-bar"><span style="width:${pct(item.confidence)};background:${color}"></span></div>
+      `;
+    }
     resultsList.appendChild(card);
   });
 }

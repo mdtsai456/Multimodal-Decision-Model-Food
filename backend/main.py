@@ -196,8 +196,18 @@ async def predict_plate(
         UPLOAD_DIR, saved_path, predictions, dish_by_id
     )
 
+    api_items = []
+    for p in predictions:
+        item = PredictionItem(**p)
+        if item.alternative:
+            print(
+                f"[debug] API 回傳前端: {item.name} ({item.confidence:.2f}) / "
+                f"{item.alternative.name} ({item.alternative.confidence:.2f})"
+            )
+        api_items.append(item)
+
     return PredictResponse(
-        predictions=[PredictionItem(**p) for p in predictions],
+        predictions=api_items,
         model=result["model"],
         raw=result.get("raw"),
         result_dir=session_dir.name,  # 例如 20260716_125930

@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import Any  # raw 欄位可能是任意內容
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DishBase(BaseModel):
@@ -90,8 +90,22 @@ class TokenOut(BaseModel):
     message: str = "ok"   # 提示訊息
 
 
+class PredictionAlt(BaseModel):
+    """信心相近時的次佳候選（與主預測共用 bbox）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    name: str
+    dish_id: int | None = None
+    dish_code: int | None = None
+    confidence: float = Field(..., ge=0, le=1)
+    reason: str | None = None
+
+
 class PredictionItem(BaseModel):
     """單一辨識結果（一道菜）。"""
+
+    model_config = ConfigDict(extra="ignore")
 
     name: str
     dish_id: int | None = None
@@ -99,10 +113,13 @@ class PredictionItem(BaseModel):
     confidence: float = Field(..., ge=0, le=1)  # 信心分數，限制在 0～1
     reason: str | None = None                   # 模型給的簡短理由
     bbox: list[float] | None = None             # [x,y,w,h] 相對座標 0～1，大概外框
+    alternative: PredictionAlt | None = None    # 信心相近時的另一候選
 
 
 class PredictResponse(BaseModel):
     """餐盤辨識整份回傳。"""
+
+    model_config = ConfigDict(extra="ignore")
 
     predictions: list[PredictionItem]  # 辨識到的菜色列表
     model: str                         # 使用的模型名稱（如 gpt-5.6-luna）
