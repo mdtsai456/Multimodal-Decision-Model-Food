@@ -199,11 +199,15 @@ async def predict_plate(
     api_items = []
     for p in predictions:
         item = PredictionItem(**p)
-        if item.alternative:
+        second = item.second_best or item.alternative
+        if second:
+            flag = "採用雙結果" if item.alternative else "僅 debug"
             print(
-                f"[debug] API 回傳前端: {item.name} ({item.confidence:.2f}) / "
-                f"{item.alternative.name} ({item.alternative.confidence:.2f})"
+                f"[debug] API 最佳/次佳: {item.name} ({item.confidence:.2f}) / "
+                f"{second.name} ({second.confidence:.2f}) [{flag}]"
             )
+        else:
+            print(f"[debug] API 最佳/次佳: {item.name} ({item.confidence:.2f}) / 無次佳")
         api_items.append(item)
 
     return PredictResponse(

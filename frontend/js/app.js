@@ -212,10 +212,26 @@ function renderResults(data) {
 
   const items = data.predictions || [];
   const closePairs = items.filter((item) => getAlternative(item));
+
   console.log("[debug] predictions", items);
+  items.forEach((item) => {
+    const second = item.second_best || item.alternative;
+    const best = `${item.name} (${pct(item.confidence)})`;
+    if (second) {
+      const flag = item.alternative ? "採用雙結果" : "僅 debug（未存 result2）";
+      console.log(
+        `[debug] 最佳/次佳: ${best} / ${second.name} (${pct(second.confidence)}) [${flag}]`
+      );
+    } else {
+      console.log(`[debug] 最佳/次佳: ${best} / 無次佳`);
+    }
+  });
   console.log(
-    "[debug] close pairs",
-    closePairs.map((p) => `${p.name} (${p.confidence}) / ${p.alternative.name} (${p.alternative.confidence})`)
+    "[debug] close pairs (有 alternative)",
+    closePairs.map(
+      (p) =>
+        `${p.name} (${pct(p.confidence)}) / ${p.alternative.name} (${pct(p.alternative.confidence)})`
+    )
   );
 
   emptyResult.classList.toggle("hidden", items.length > 0);

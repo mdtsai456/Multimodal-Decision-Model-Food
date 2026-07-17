@@ -245,35 +245,25 @@ def _prediction_core(dish: Dish, item: dict, bbox: list[float] | None) -> dict:
     }
 
 
-def _parse_alternative(
+def _extract_second_best(
     raw_alt,
     dishes: list[Dish],
     primary_name: str,
     primary_id: int,
-    primary_conf: float,
     bbox: list[float] | None,
 ) -> dict | None:
-    """解析次佳候選；信心不相近或與主菜相同則忽略。"""
+    """取出模型給的次佳候選（不依信心差過濾；給 console / second_best 用）。"""
     if not isinstance(raw_alt, dict):
-        print(f"[debug] {primary_name}: 模型未給 alternative → 略過")
+        print(f"[debug] {primary_name}: 模型未給 alternative → 無次佳")
         return None
     alt_dish = _match_dish(raw_alt, dishes)
     if not alt_dish:
-        print(f"[debug] {primary_name}: alternative 對不到菜單 → 略過")
+        print(f"[debug] {primary_name}: alternative 對不到菜單 → 無次佳")
         return None
     if alt_dish.id == primary_id:
-        print(f"[debug] {primary_name}: alternative 與主菜相同 → 略過")
+        print(f"[debug] {primary_name}: alternative 與主菜相同 → 無次佳")
         return None
     alt = _prediction_core(alt_dish, raw_alt, bbox)
-    delta = abs(alt["confidence"] - primary_conf)
-    if delta > CLOSE_CONFIDENCE_DELTA:
-        print(
-            f"[debug] {primary_name} ({primary_conf:.2f}) / "
-            f"{alt['name']} ({alt['confidence']:.2f}) "
-            f"信心差 {delta:.2f} > {CLOSE_CONFIDENCE_DELTA} → 不採用 alternative"
-        )
-        return None
-    # alternative 不帶 bbox（與主預測共用）
     return {
         "name": alt["name"],
         "dish_id": alt["dish_id"],
@@ -281,6 +271,25 @@ def _parse_alternative(
         "confidence": alt["confidence"],
         "reason": alt["reason"],
     }
+
+
+def _maybe_adopt_alternative(
+    primary_name: str,
+    primary_conf: float,
+    second: dict | None,
+) -> dict | None:
+    """信心相近才採用為 alternative（影響前端雙條與 result1/result2）。"""
+    if not second:
+        return None
+    delta = abs(float(second["confidence"]) - primary_conf)
+    if delta > CLOSE_CONFIDENCE_DELTA:
+        print(
+            f"[debug] {primary_name} ({primary_conf:.2f}) / "
+            f"{second['name']} ({second['confidence']:.2f}) "
+            f"信心差 {delta:.2f} > {CLOSE_CONFIDENCE_DELTA} → 僅供 debug，不存 alternative"
+        )
+        return None
+    return second
 
 
 def _bbox_iou(a: list[float] | None, b: list[float] | None) -> float:
@@ -335,13 +344,15 @@ def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
         used.add(pair_j)
         primary, secondary = (a, b) if a["confidence"] >= b["confidence"] else (b, a)
         primary = dict(primary)
-        primary["alternative"] = {
+        second = {
             "name": secondary["name"],
             "dish_id": secondary["dish_id"],
             "dish_code": secondary["dish_code"],
             "confidence": secondary["confidence"],
             "reason": secondary.get("reason"),
         }
+        primary["second_best"] = second
+        primary["alternative"] = second
         print(
             f"[debug] bbox 合併相近候選: "
             f"{primary['name']} ({primary['confidence']:.2f}) / "
@@ -354,18 +365,23 @@ def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
 
 
 def _debug_print_close_candidates(predictions: list[dict]) -> None:
-    """印出最終保留的相近雙候選，方便對照前端雙條與 result1/result2。"""
-    pairs = [p for p in predictions if p.get("alternative")]
-    if not pairs:
-        print("[debug] 相近候選: 無")
+    """印出每道菜的最佳／次佳，以及是否採用 alternative。"""
+    if not predictions:
+        print("[debug] 候選: 無")
         return
-    for p in pairs:
-        alt = p["alternative"]
-        print(
-            f"[debug] 相近候選: "
-            f"{p.get('name')} ({float(p.get('confidence') or 0):.2f}) / "
-            f"{alt.get('name')} ({float(alt.get('confidence') or 0):.2f})"
+    for p in predictions:
+        second = p.get("second_best") or p.get("alternative")
+        best = (
+            f"{p.get('name')} ({float(p.get('confidence') or 0):.2f})"
         )
+        if second:
+            second_s = (
+                f"{second.get('name')} ({float(second.get('confidence') or 0):.2f})"
+            )
+            flag = "採用雙結果" if p.get("alternative") else "僅 debug"
+            print(f"[debug] 最佳/次佳: {best} / {second_s} [{flag}]")
+        else:
+            print(f"[debug] 最佳/次佳: {best} / 無次佳")
 
 
 # 主流程：圖片 + 菜單 → 呼叫模型 → 整理成 predictions
@@ -396,23 +412,25 @@ def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
         seen.add(dish.id)
         bbox = _normalize_bbox(item.get("bbox"))
         pred = _prediction_core(dish, item, bbox)
-        alt = _parse_alternative(
+        second = _extract_second_best(
             item.get("alternative"),
             dishes,
             pred["name"],
             dish.id,
-            pred["confidence"],
             bbox,
         )
-        if alt:
+        if second:
+            pred["second_best"] = second
             # 次佳菜也標記為已出現，避免後面又當獨立一道菜
-            seen.add(alt["dish_id"])
-            pred["alternative"] = alt
-            print(
-                f"[debug] 採用相近候選: "
-                f"{pred['name']} ({pred['confidence']:.2f}) / "
-                f"{alt['name']} ({alt['confidence']:.2f})"
-            )
+            seen.add(second["dish_id"])
+            alt = _maybe_adopt_alternative(pred["name"], pred["confidence"], second)
+            if alt:
+                pred["alternative"] = alt
+                print(
+                    f"[debug] 採用相近候選: "
+                    f"{pred['name']} ({pred['confidence']:.2f}) / "
+                    f"{alt['name']} ({alt['confidence']:.2f})"
+                )
         predictions.append(pred)
 
     # 信心高的排前面，再合併重疊且信心相近的獨立兩筆

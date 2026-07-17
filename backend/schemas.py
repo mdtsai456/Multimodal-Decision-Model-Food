@@ -113,7 +113,8 @@ class PredictionItem(BaseModel):
     confidence: float = Field(..., ge=0, le=1)  # 信心分數，限制在 0～1
     reason: str | None = None                   # 模型給的簡短理由
     bbox: list[float] | None = None             # [x,y,w,h] 相對座標 0～1，大概外框
-    alternative: PredictionAlt | None = None    # 信心相近時的另一候選
+    alternative: PredictionAlt | None = None    # 信心相近時採用（雙條 UI + result1/2）
+    second_best: PredictionAlt | None = None    # 模型次佳（一律回傳，方便 console debug）
 
 
 class PredictResponse(BaseModel):
