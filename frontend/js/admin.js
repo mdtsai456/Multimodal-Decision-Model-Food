@@ -366,42 +366,17 @@ function toAdminResult1(dishes) {
   }));
 }
 
-function toAdminResult2(dishes) {
-  return (dishes || []).map((d) => {
-    const alt = d.alternative;
-    if (alt && alt.dish_name) {
-      return { dish_name: alt.dish_name, bbox: d.bbox };
-    }
-    return { dish_name: d.dish_name, bbox: d.bbox };
-  });
-}
-
 function renderRecordDetail(detail) {
   const dishes = detail.dishes || [];
   const bust = Date.now();
-  const canCanvas = Boolean(detail.original_url) && dishesHaveBbox(dishes);
   const hasDual = Boolean(detail.has_dual);
+  // 雙結果直接用預存 result1/result2 標註圖（部署環境 canvas 重畫較不穩）
+  const useDualImgs = hasDual && detail.boxed1_url && detail.boxed2_url;
+  const canCanvas =
+    !useDualImgs && Boolean(detail.original_url) && dishesHaveBbox(dishes);
   let imageHtml = "";
 
-  if (canCanvas && hasDual) {
-    // 雙結果：兩張 canvas（與辨識頁相同畫法），不顯示合併圖
-    imageHtml = `
-      <div class="result-boxed-pair">
-        <figure class="result-boxed-fig">
-          <canvas class="result-canvas record-result-canvas-1" aria-label="result1 標註圖"></canvas>
-          <figcaption>result1</figcaption>
-        </figure>
-        <figure class="result-boxed-fig">
-          <canvas class="result-canvas record-result-canvas-2" aria-label="result2 標註圖"></canvas>
-          <figcaption>result2</figcaption>
-        </figure>
-      </div>`;
-  } else if (canCanvas) {
-    imageHtml = `
-      <div class="result-image-wrap">
-        <canvas class="result-canvas record-result-canvas" aria-label="辨識結果標註圖"></canvas>
-      </div>`;
-  } else if (hasDual && detail.boxed1_url && detail.boxed2_url) {
+  if (useDualImgs) {
     imageHtml = `
       <div class="result-boxed-pair">
         <figure class="result-boxed-fig">
@@ -412,6 +387,11 @@ function renderRecordDetail(detail) {
           <img class="result-boxed-img" src="${escapeHtml(detail.boxed2_url)}?t=${bust}" alt="result2 標註圖" />
           <figcaption>result2</figcaption>
         </figure>
+      </div>`;
+  } else if (canCanvas) {
+    imageHtml = `
+      <div class="result-image-wrap">
+        <canvas class="result-canvas record-result-canvas" aria-label="辨識結果標註圖"></canvas>
       </div>`;
   } else {
     imageHtml = `
@@ -466,7 +446,6 @@ function renderRecordDetail(detail) {
       ${empty}
     </div>`,
     canCanvas,
-    hasDual,
     originalUrl: detail.original_url,
     dishes,
   };
@@ -561,16 +540,9 @@ recordsList.addEventListener("click", async (e) => {
     const painted = renderRecordDetail(detail);
     body.innerHTML = painted.html;
     if (painted.canCanvas && painted.originalUrl) {
-      if (painted.hasDual) {
-        const c1 = body.querySelector(".record-result-canvas-1");
-        const c2 = body.querySelector(".record-result-canvas-2");
-        if (c1) paintRecordCanvas(c1, painted.originalUrl, toAdminResult1(painted.dishes));
-        if (c2) paintRecordCanvas(c2, painted.originalUrl, toAdminResult2(painted.dishes));
-      } else {
-        const canvas = body.querySelector(".record-result-canvas");
-        if (canvas) {
-          paintRecordCanvas(canvas, painted.originalUrl, toAdminResult1(painted.dishes));
-        }
+      const canvas = body.querySelector(".record-result-canvas");
+      if (canvas) {
+        paintRecordCanvas(canvas, painted.originalUrl, toAdminResult1(painted.dishes));
       }
     }
   } catch (err) {
