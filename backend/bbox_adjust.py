@@ -6,7 +6,7 @@ import os
 
 # 舊版單一變數：若未另設 TOP/BOTTOM，兩邊都沿用此值
 
-_DEFAULT = 0.03
+_DEFAULT = 0.08
 _DEFAULT1 =  0.01
 
 # 正值＝往下，負值＝往上（相對整張圖高度 0~1）
