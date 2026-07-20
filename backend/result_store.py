@@ -10,6 +10,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
+from .bbox_adjust import BBOX_SHIFT_VERSION, denudge_top_bboxes
+
 # 資料夾命名：YYYYMMDD_HHMMSS 或 YYYYMMDD_HHMMSS_N
 SESSION_DIR_RE = re.compile(r"^(\d{8})_(\d{6})(?:_(\d+))?$")
 
@@ -290,6 +292,28 @@ def load_record_detail(upload_root: Path, session_id: str) -> dict | None:
     # 舊紀錄缺 bbox：從標註圖還原，讓前端可用 canvas 畫出清晰繁中標籤
     dishes_out = _ensure_dish_bboxes(session_dir, dishes_out)
 
+    # 舊版全體 Y-nudge 會讓上排框太低：還原後重畫標註圖（只做一次）
+    stored_ver = int(primary.get("bbox_shift_version") or 1)
+    if stored_ver < BBOX_SHIFT_VERSION:
+        meal_type = str(primary.get("meal_type") or "")
+        if denudge_top_bboxes(dishes_out):
+            _persist_denudged_bboxes(
+                session_dir,
+                dishes_out,
+                has_dual=has_dual,
+                meal_type=meal_type,
+            )
+        else:
+            # 無需改框也標成新版，避免每次載入重試
+            primary["bbox_shift_version"] = BBOX_SHIFT_VERSION
+            try:
+                (session_dir / "result.json").write_text(
+                    json.dumps(primary, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except OSError:
+                pass
+
     original = next(iter(sorted(session_dir.glob("original.*"))), None)
     original_url = (
         f"/uploads/{session_id}/{original.name}" if original and original.is_file() else None
@@ -410,7 +434,7 @@ def draw_boxed_image(
 
         draw.rectangle([left, top, right, bottom], outline=color, width=line_w)
 
-        label = str(item.get("name") or "")
+        label = str(item.get("name") or item.get("dish_name") or "")
         if not label:
             continue
         # 標籤底色
@@ -468,7 +492,107 @@ def build_result_json(predictions: list[dict], dish_by_id: dict) -> dict:
     if meal_types:
         meal_type = Counter(meal_types).most_common(1)[0][0]
 
-    return {"meal_type": meal_type, "dishes": dishes_out}
+    return {
+        "meal_type": meal_type,
+        "dishes": dishes_out,
+        "bbox_shift_version": BBOX_SHIFT_VERSION,
+    }
+
+
+def _dish_for_draw(name: str, bbox) -> dict:
+    return {"name": name, "bbox": bbox}
+
+
+def _write_result_json(path: Path, meal_type: str, dishes: list[dict]) -> None:
+    payload = {
+        "meal_type": meal_type,
+        "dishes": dishes,
+        "bbox_shift_version": BBOX_SHIFT_VERSION,
+    }
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _persist_denudged_bboxes(
+    session_dir: Path,
+    dishes_out: list[dict],
+    *,
+    has_dual: bool,
+    meal_type: str,
+) -> None:
+    """把還原後的上排 bbox 寫回 JSON，並重畫 result_boxed 標註圖。"""
+    original = next(iter(sorted(session_dir.glob("original.*"))), None)
+    if original is None or not original.is_file():
+        return
+
+    root_dishes = []
+    for d in dishes_out:
+        entry = {
+            "dish_id": d.get("dish_id") or "",
+            "dish_name": d.get("dish_name") or "",
+            "confidence": round(float(d.get("confidence") or 0), 2),
+            "reason": d.get("reason"),
+            "bbox": d.get("bbox"),
+        }
+        alt = d.get("alternative")
+        if isinstance(alt, dict) and alt.get("dish_name"):
+            entry["alternative"] = {
+                "dish_id": alt.get("dish_id") or "",
+                "dish_name": alt.get("dish_name") or "",
+                "confidence": round(float(alt.get("confidence") or 0), 2),
+                "reason": alt.get("reason"),
+            }
+        root_dishes.append(entry)
+
+    _write_result_json(session_dir / "result.json", meal_type, root_dishes)
+    draw_boxed_image(
+        original,
+        [_dish_for_draw(d["dish_name"], d.get("bbox")) for d in root_dishes],
+        session_dir / "result_boxed.jpg",
+    )
+
+    if not has_dual:
+        return
+
+    r1_dishes = []
+    r2_dishes = []
+    r1_draw = []
+    r2_draw = []
+    for d in root_dishes:
+        left = {
+            "dish_id": d.get("dish_id") or "",
+            "dish_name": d.get("dish_name") or "",
+            "confidence": d.get("confidence") or 0,
+            "reason": d.get("reason"),
+            "bbox": d.get("bbox"),
+        }
+        r1_dishes.append(left)
+        r1_draw.append(_dish_for_draw(left["dish_name"], left.get("bbox")))
+
+        alt = d.get("alternative") if isinstance(d.get("alternative"), dict) else None
+        if alt and alt.get("dish_name"):
+            right = {
+                "dish_id": alt.get("dish_id") or "",
+                "dish_name": alt.get("dish_name") or "",
+                "confidence": alt.get("confidence") or 0,
+                "reason": alt.get("reason"),
+                "bbox": d.get("bbox"),
+            }
+        else:
+            right = dict(left)
+        r2_dishes.append(right)
+        r2_draw.append(_dish_for_draw(right["dish_name"], right.get("bbox")))
+
+    r1_dir = session_dir / "result1"
+    r2_dir = session_dir / "result2"
+    if r1_dir.is_dir():
+        _write_result_json(r1_dir / "result.json", meal_type, r1_dishes)
+        draw_boxed_image(original, r1_draw, r1_dir / "result_boxed.jpg")
+    if r2_dir.is_dir():
+        _write_result_json(r2_dir / "result.json", meal_type, r2_dishes)
+        draw_boxed_image(original, r2_draw, r2_dir / "result_boxed.jpg")
 
 
 def _strip_alternatives(predictions: list[dict]) -> list[dict]:
