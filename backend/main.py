@@ -39,7 +39,11 @@ from .schemas import (
     RecordListOut,    # 辨識紀錄列表
     TokenOut,         # 登入成功回傳 token
 )
-from .result_store import list_records_for_date, load_record_detail, save_recognition_bundle
+from .result_store import (
+    list_records_for_date,    # 依日期列出 uploads 辨識紀錄摘要
+    load_record_detail,       # 讀單筆紀錄詳情（圖、菜色、bbox）
+    save_recognition_bundle,  # 辨識後存原圖／標註圖／result.json
+)
 from .vision import CLOSE_CONFIDENCE_DELTA, recognize_dishes  # 呼叫 AI 模型辨識餐盤
 
 # 啟動時依 model 建立資料表（若已存在則略過）
@@ -74,8 +78,13 @@ def _photo_list(value: str | None) -> list[str] | None:
 
 # 把 ORM 的 Dish 轉成 API 回傳格式 DishOut
 def dish_to_out(dish: Dish) -> DishOut:
+    # 從資料庫物件 Dish，轉成要回給前端的 DishOut
+    # 先把資料表每個欄位名 → 對應的值，收成一個 dict
+    # 例如 {"id": 1, "name": "炒青菜", "calories_100g": "80", ...}
     data = {col.name: getattr(dish, col.name) for col in dish.__table__.columns}
+    # photo_files 在 DB 是 JSON 字串，API 要回 list，所以另外轉
     data["photo_files"] = _photo_list(dish.photo_files)
+    # 用這個 dict 建立 DishOut（Pydantic 會檢查型別）
     return DishOut(**data)
 
 
@@ -148,9 +157,9 @@ def delete_dish(
 # 匯入 Excel：只追加新菜，不會清掉舊資料（需管理員 token）
 @app.post("/api/admin/import-excel")
 async def import_excel(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    _: str = Depends(require_admin),
+    file: UploadFile = File(...),       # 上傳的 Excel 檔（必填）
+    db: Session = Depends(get_db),      # 自動注入資料庫連線
+    _: str = Depends(require_admin),    # 需有效管理員 token；_ 表示回傳值用不到
 ):
     if not file.filename or not file.filename.lower().endswith((".xlsx", ".xlsm", ".xls")):
         raise HTTPException(status_code=400, detail="請上傳 Excel 檔案")
@@ -168,41 +177,47 @@ async def import_excel(
 
 
 # 餐盤辨識：上傳圖片 → 依資料庫菜單呼叫 AI 模型 → 存結果資料夾
-@app.post("/api/predict", response_model=PredictResponse)
+@app.post("/api/predict", response_model=PredictResponse)  # POST；回傳格式固定為 PredictResponse
 async def predict_plate(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
+    file: UploadFile = File(...),   # 上傳的餐盤圖片（必填）
+    db: Session = Depends(get_db),  # 自動注入資料庫連線
 ):
+    # 不是圖片（或沒有 content_type）→ 400 拒絕
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="請上傳圖片檔")
 
     # 先暫存到 uploads，辨識後會移入「日期_時間」資料夾
-    suffix = Path(file.filename or "plate.jpg").suffix or ".jpg"
-    saved_name = f"{uuid.uuid4().hex}{suffix}"
-    saved_path = UPLOAD_DIR / saved_name
+    suffix = Path(file.filename or "plate.jpg").suffix or ".jpg"  # 副檔名，沒有就用 .jpg
+    saved_name = f"{uuid.uuid4().hex}{suffix}"  # 亂數檔名，避免撞名
+    saved_path = UPLOAD_DIR / saved_name        # 完整暫存路徑
     with saved_path.open("wb") as f:
-        shutil.copyfileobj(file.file, f)
+        shutil.copyfileobj(file.file, f)  # 把上傳內容寫進磁碟
 
+    # 讀出全部菜單（依菜色編號排序），當 AI 的候選清單
     dishes = db.query(Dish).order_by(Dish.dish_code.asc()).all()
     try:
+        # 呼叫 vision：圖片 + 菜單 → 模型辨識
         result = recognize_dishes(saved_path, dishes)
     except Exception as exc:
+        # 辨識失敗：刪掉暫存圖，回 502
         if saved_path.exists():
             saved_path.unlink()
         raise HTTPException(status_code=502, detail=f"模型辨識失敗：{exc}") from exc
 
-    predictions = result["predictions"]
-    dish_by_id = {d.id: d for d in dishes}
-    # 存：原圖 / 標註圖 / JSON
+    predictions = result["predictions"]  # 辨識到的菜色列表（dict）
+    dish_by_id = {d.id: d for d in dishes}  # id → Dish，存檔時查餐別等用
+    # 存：原圖 / 標註圖 / JSON（暫存圖會移進 session 資料夾）
     session_dir = save_recognition_bundle(
         UPLOAD_DIR, saved_path, predictions, dish_by_id
     )
 
-    api_items = []
+    api_items = []  # 轉成 Pydantic，準備回傳給前端 Pydantic 會檢查：缺欄位、型別錯、信心分數超出範圍 → 直接報錯；通過才繼續。
     for p in predictions:
-        item = PredictionItem(**p)
+        item = PredictionItem(**p)  # dict → PredictionItem # 用字典填進「規格表」
+        # 次佳：有採用的 alternative，或僅供 debug 的 second_best
         second = item.second_best or item.alternative
         if second:
+            # 有 alternative＝前端會雙結果；只有 second_best＝只印 log
             flag = "採用雙結果" if item.alternative else "僅 debug"
             print(
                 f"[debug] API 最佳/次佳: {item.name} ({item.confidence:.2f}) / "
@@ -212,12 +227,13 @@ async def predict_plate(
             print(f"[debug] API 最佳/次佳: {item.name} ({item.confidence:.2f}) / 無次佳")
         api_items.append(item)
 
+    # 組整份 API 回應
     return PredictResponse(
-        predictions=api_items,
-        model=result["model"],
-        raw=result.get("raw"),
-        result_dir=session_dir.name,  # 例如 20260716_125930
-        close_confidence_delta=CLOSE_CONFIDENCE_DELTA,
+        predictions=api_items,              # 菜名、信心、bbox、次佳等
+        model=result["model"],              # 實際使用的模型名稱
+        raw=result.get("raw"),              # 模型原始文字（除錯用）
+        result_dir=session_dir.name,        # 存檔資料夾名，例如 20260716_125930
+        close_confidence_delta=CLOSE_CONFIDENCE_DELTA,  # 雙結果信心差門檻
     )
 
 

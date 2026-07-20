@@ -1,4 +1,9 @@
 """資料庫連線與路徑設定。"""
+"""
+   db = SessionLocal()   # 開門
+   # 查資料、改資料…
+   db.close()            # 關門
+"""
 from pathlib import Path
 
 from dotenv import load_dotenv

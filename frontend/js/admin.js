@@ -19,8 +19,9 @@ const recordsEmpty = document.getElementById("records-empty");
 const tabMenu = document.getElementById("tab-menu");
 const tabRecords = document.getElementById("tab-records");
 
-let expandedRecordId = null;
+let expandedRecordId = null; // 目前展開中的紀錄 id（同一時間只開一筆）
 
+// 畫面底部短暫提示
 function showToast(message) {
   toastEl.textContent = message;
   toastEl.classList.remove("hidden");
@@ -28,15 +29,18 @@ function showToast(message) {
   showToast._t = setTimeout(() => toastEl.classList.add("hidden"), 2800);
 }
 
+// 從 localStorage 讀管理員 token
 function getToken() {
   return localStorage.getItem(TOKEN_KEY) || "";
 }
 
+// 登入寫入／登出清除 token
 function setToken(token) {
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+// 組出帶 Authorization: Bearer 的 headers（管理 API 用）
 function authHeaders(extra = {}) {
   const token = getToken();
   return {
@@ -45,11 +49,13 @@ function authHeaders(extra = {}) {
   };
 }
 
+// 切換登入畫面 ↔ 管理主畫面
 function showAdmin(isLoggedIn) {
   loginPanel.classList.toggle("hidden", isLoggedIn);
   adminPanel.classList.toggle("hidden", !isLoggedIn);
 }
 
+// 避免表格／卡片內容被當成 HTML 注入
 function escapeHtml(text) {
   return String(text ?? "")
     .replaceAll("&", "&amp;")
@@ -58,6 +64,7 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
+// 統一 fetch：失敗拋錯；401 則清 token 並退回登入
 async function api(url, options = {}) {
   const res = await fetch(url, options);
   let data = null;
@@ -77,6 +84,7 @@ async function api(url, options = {}) {
   return data;
 }
 
+// 今天的 YYYY-MM-DD（給日期選擇器預設值）
 function todayIso() {
   const d = new Date();
   const y = d.getFullYear();
@@ -85,12 +93,14 @@ function todayIso() {
   return `${y}-${m}-${day}`;
 }
 
+// 主候選外框／卡片色（色環均分）
 function colorForIndex(index, total) {
   const n = Math.max(total, 1);
   const hue = Math.round((index * 360) / n) % 360;
   return `hsl(${hue}, 58%, 40%)`;
 }
 
+// 次佳候選略偏色相，與左側區隔
 function altColorForIndex(index, total) {
   const n = Math.max(total, 1);
   const hue = Math.round((index * 360) / n + 28) % 360;
@@ -146,6 +156,7 @@ logoutBtn.addEventListener("click", () => {
   showToast("已登出");
 });
 
+// 向後端拉全部菜色，填入表格列
 async function loadDishes() {
   const dishes = await api("/api/dishes");
   dishTbody.innerHTML = dishes
@@ -168,6 +179,7 @@ async function loadDishes() {
     .join("");
 }
 
+// 事件委派：點編輯 → 開對話框；點刪除 → 確認後 DELETE
 dishTbody.addEventListener("click", async (e) => {
   const editId = e.target.getAttribute("data-edit");
   const delId = e.target.getAttribute("data-del");
@@ -196,6 +208,7 @@ function field(id) {
   return document.getElementById(id);
 }
 
+// 把既有菜色欄位填進編輯對話框
 function openDialog(dish) {
   dialogTitle.textContent = "編輯菜色";
   field("dish-id").value = dish.id;
@@ -217,6 +230,7 @@ function openDialog(dish) {
   dialog.showModal();
 }
 
+// 從對話框收集要 PUT 的欄位（空字串多半轉 null）
 function collectForm() {
   const codeVal = field("f-dish_code").value;
   return {
@@ -262,6 +276,7 @@ dishForm.addEventListener("submit", async (e) => {
   }
 });
 
+// 選 Excel 後上傳：只追加新菜，重複略過
 excelInput.addEventListener("change", async () => {
   const file = excelInput.files?.[0];
   if (!file) return;
@@ -283,11 +298,11 @@ excelInput.addEventListener("change", async () => {
   } catch (err) {
     showToast(err.message);
   } finally {
-    excelInput.value = "";
+    excelInput.value = ""; // 清空，方便同一檔再選一次
   }
 });
 
-// --- 記錄管理 ---
+// --- 記錄管理：列表／展開詳情／標註圖 ---
 function renderHalf(item, color) {
   const code = item.dish_id ? `編號 ${escapeHtml(item.dish_id)}` : "—";
   const reason = item.reason ? ` · ${escapeHtml(item.reason)}` : "";
@@ -303,6 +318,7 @@ function renderHalf(item, color) {
   `;
 }
 
+// 是否至少有一道菜有可用 bbox（決定能否用 canvas 重畫）
 function dishesHaveBbox(dishes) {
   return (dishes || []).some(
     (d) => Array.isArray(d.bbox) && d.bbox.length === 4
@@ -359,6 +375,7 @@ function paintRecordCanvas(canvas, originalUrl, dishes) {
   img.src = originalUrl;
 }
 
+// 管理頁 canvas 只需菜名與 bbox
 function toAdminResult1(dishes) {
   return (dishes || []).map((d) => ({
     dish_name: d.dish_name,
@@ -366,9 +383,10 @@ function toAdminResult1(dishes) {
   }));
 }
 
+// 組出展開區 HTML：雙結果用預存圖；否則優先 canvas；再退回單張標註圖
 function renderRecordDetail(detail) {
   const dishes = detail.dishes || [];
-  const bust = Date.now();
+  const bust = Date.now(); // 避免瀏覽器快取舊標註圖
   const hasDual = Boolean(detail.has_dual);
   // 雙結果直接用預存 result1/result2 標註圖（部署環境 canvas 重畫較不穩）
   const useDualImgs = hasDual && detail.boxed1_url && detail.boxed2_url;
@@ -451,6 +469,7 @@ function renderRecordDetail(detail) {
   };
 }
 
+// 依日期列出當日辨識紀錄摘要
 async function loadRecords(date) {
   if (!date) {
     recordsList.innerHTML = "";
@@ -501,6 +520,7 @@ async function loadRecords(date) {
   }
 }
 
+// 點摘要列：展開／收合，並向 /api/admin/records/{id} 拉詳情
 recordsList.addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-toggle]");
   if (!btn) return;
@@ -509,6 +529,7 @@ recordsList.addEventListener("click", async (e) => {
   const body = item?.querySelector(`[data-body="${id}"]`);
   if (!body) return;
 
+  // 再點同一筆 → 收合
   if (expandedRecordId === id) {
     body.classList.add("hidden");
     body.innerHTML = "";
@@ -555,6 +576,7 @@ recordDateInput.addEventListener("change", () => {
   loadRecords(recordDateInput.value);
 });
 
+// 進頁：預設今天日期；有 token 就試著載入菜單（失效則退回登入）
 async function boot() {
   if (!recordDateInput.value) {
     recordDateInput.value = todayIso();

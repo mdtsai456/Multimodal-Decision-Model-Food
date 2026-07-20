@@ -233,7 +233,7 @@ def _normalize_bbox(raw) -> list[float] | None:
     h = y2 - y1
     if w < 0.02 or h < 0.02:  # 太小的框忽略
         return None
-    return [round(x1, 4), round(y1, 4), round(w, 4), round(h, 4)]
+    return [round(x1, 4), round(y1, 4), round(w, 4), round(h, 4)] # 統一輸出：一律變成 [x, y, w, h]（相對座標 0～1）
 
 
 def _ensure_upright_image(path: Path) -> None:
@@ -241,9 +241,10 @@ def _ensure_upright_image(path: Path) -> None:
     from PIL import Image, ImageOps
 
     with Image.open(path) as img:
-        oriented = ImageOps.exif_transpose(img)
+        oriented = ImageOps.exif_transpose(img) # 打開圖片後，依 EXIF 的旋轉／鏡像標記，把像素真正轉正。
         # 轉成 RGB 存回，去掉方向標記造成的錯位
         rgb = oriented.convert("RGB")
+        # 轉成一般 RGB
         suffix = path.suffix.lower()
         if suffix in {".png", ".webp", ".gif"}:
             rgb.save(path)
@@ -311,18 +312,29 @@ def _maybe_adopt_alternative(
 
 
 def _bbox_iou(a: list[float] | None, b: list[float] | None) -> float:
+    """
+    算兩個框重疊多少（IoU = 交集面積 / 聯集面積），回傳 0～1。
+    愈接近 1 表示兩個框幾乎同一位置；用來判斷要不要合併成雙結果。
+    框格式皆為 [x, y, w, h]（相對座標 0～1）。
+    """
+    # 缺框或不是 4 個數字 → 當完全不重疊
     if not a or not b or len(a) != 4 or len(b) != 4:
         return 0.0
+    # 框 A：左上 (ax1,ay1)、右下 (ax2,ay2)
     ax1, ay1 = a[0], a[1]
     ax2, ay2 = a[0] + a[2], a[1] + a[3]
+    # 框 B：同上
     bx1, by1 = b[0], b[1]
     bx2, by2 = b[0] + b[2], b[1] + b[3]
+    # 交集矩形的左上／右下（取較內側的邊）
     ix1, iy1 = max(ax1, bx1), max(ay1, by1)
     ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    # 交集寬高；沒重疊時會是負的 → 用 max 夾成 0
     iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
-    inter = iw * ih
+    inter = iw * ih # 交集面積
     if inter <= 0:
         return 0.0
+    # 聯集 = A面積 + B面積 - 交集（重疊區不要算兩次)
     union = a[2] * a[3] + b[2] * b[3] - inter
     return inter / union if union > 0 else 0.0
 
@@ -331,37 +343,44 @@ def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
     """
     後備：若模型把相近兩道菜拆成兩筆且 bbox 重疊、信心相近，
     合併為一筆主預測 + alternative。
+    (防止模型沒照做時結果還能合理顯示)
     """
+    # 少於兩筆 → 不可能成對，原樣返回
     if len(predictions) < 2:
         return predictions
 
-    used = set()
-    merged: list[dict] = []
+    used = set()  # 已被合併掉、不要再當主筆處理的索引
+    merged: list[dict] = []  # 合併後的結果列表
     for i, a in enumerate(predictions):
         if i in used:
-            continue
-        pair_j = None
+            continue  # 這筆已當過別人的次佳，跳過
+        pair_j = None  # 找到的配對索引；找不到維持 None
+        # 往後找能不能跟 a 配成「同一格的雙候選」
         for j in range(i + 1, len(predictions)):
             if j in used:
-                continue
+                continue  # j 已被用過
             b = predictions[j]
+            # 任一筆已有 alternative → 不重複合併
             if a.get("alternative") or b.get("alternative"):
                 continue
+            # 信心差太大 → 不像「難分勝負」的兩道
             if abs(a["confidence"] - b["confidence"]) > CLOSE_CONFIDENCE_DELTA:
                 continue
+            # 框重疊不夠（IoU < 0.45）→ 多半是不同格子，不要併
             if _bbox_iou(a.get("bbox"), b.get("bbox")) < 0.45:
                 continue
-            pair_j = j
+            pair_j = j  # 找到合適的一對
             break
 
         if pair_j is None:
-            merged.append(a)
+            merged.append(a)  # 沒配對 → a 單獨留下
             continue
 
         b = predictions[pair_j]
-        used.add(pair_j)
+        used.add(pair_j)  # 標記 b 已被併入，後面不要再處理
+        # 信心高的當主預測，低的當次佳
         primary, secondary = (a, b) if a["confidence"] >= b["confidence"] else (b, a)
-        primary = dict(primary)
+        primary = dict(primary)  # 複製一份，避免改到原 list 裡的物件
         second = {
             "name": secondary["name"],
             "dish_id": secondary["dish_id"],
@@ -369,8 +388,8 @@ def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
             "confidence": secondary["confidence"],
             "reason": secondary.get("reason"),
         }
-        primary["second_best"] = second
-        primary["alternative"] = second
+        primary["second_best"] = second   # debug 用
+        primary["alternative"] = second   # 正式採用雙結果（前端／存檔）
         print(
             f"[debug] bbox 合併相近候選: "
             f"{primary['name']} ({primary['confidence']:.2f}) / "
@@ -378,6 +397,7 @@ def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
         )
         merged.append(primary)
 
+    # 合併完再依信心由高到低排
     merged.sort(key=lambda x: x["confidence"], reverse=True)
     return merged
 

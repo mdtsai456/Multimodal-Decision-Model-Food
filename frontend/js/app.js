@@ -88,10 +88,12 @@ dropzone.addEventListener("drop", (e) => {
   else showToast("請放置圖片檔");
 });
 
+// 信心分數 0~1 → 顯示用百分比字串
 function pct(confidence) {
   return `${Math.round(Number(confidence) * 100)}%`;
 }
 
+// 避免菜名／理由含 HTML 特殊字元造成 XSS
 function escapeHtml(text) {
   return String(text)
     .replaceAll("&", "&amp;")
@@ -100,12 +102,14 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
+// 卡片次要資訊：菜色編號 + 模型理由
 function halfMeta(item) {
   const code = item.dish_code != null ? `編號 ${item.dish_code}` : "—";
   const reason = item.reason ? ` · ${escapeHtml(item.reason)}` : "";
   return `${code}${reason}`;
 }
 
+// 取出「已採用」的次佳候選（有 alternative 才會雙條顯示）
 function getAlternative(item) {
   const alt = item?.alternative;
   if (!alt || typeof alt !== "object") return null;
@@ -113,6 +117,7 @@ function getAlternative(item) {
   return alt;
 }
 
+// 雙結果卡片的左／右半邊 HTML
 function renderHalf(item, color) {
   return `
     <div class="result-half" style="border-left-color:${color}">
@@ -179,6 +184,7 @@ function paintBoxedCanvas(canvas, items) {
   img.src = previewUrl;
 }
 
+// result1：每格只畫主預測菜名（共用 bbox）
 function toResult1Items(items) {
   return (items || []).map((item) => ({
     name: item.name,
@@ -189,6 +195,7 @@ function toResult1Items(items) {
   }));
 }
 
+// result2：有次佳則改畫次佳菜名，bbox 仍用同一格
 function toResult2Items(items) {
   return (items || []).map((item) => {
     const alt = getAlternative(item);
@@ -211,6 +218,7 @@ function toResult2Items(items) {
   });
 }
 
+// 信心相近時並排顯示兩張標註圖
 function showDualCanvases(items) {
   resultCanvas.classList.add("hidden");
   resultBoxedPair?.classList.remove("hidden");
@@ -222,6 +230,7 @@ function hideBoxedPair() {
   resultBoxedPair?.classList.add("hidden");
 }
 
+// 一般情況：只顯示一張標註圖
 function showSingleCanvas(items) {
   hideBoxedPair();
   paintBoxedCanvas(resultCanvas, toResult1Items(items));
