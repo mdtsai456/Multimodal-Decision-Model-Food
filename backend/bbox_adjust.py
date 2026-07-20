@@ -6,8 +6,8 @@ import os
 
 # 舊版單一變數：若未另設 TOP/BOTTOM，兩邊都沿用此值
 _LEGACY = os.getenv("BBOX_Y_SHIFT")
-_DEFAULT = float(_LEGACY) if _LEGACY is not None else 0.08
-_DEFAULT1 =  0.03
+_DEFAULT = float(_LEGACY) if _LEGACY is not None else 0.03
+_DEFAULT1 =  0.01
 
 # 正值＝往下，負值＝往上（相對整張圖高度 0~1）
 BBOX_TOP_Y_SHIFT = float(os.getenv("BBOX_TOP_Y_SHIFT", str(_DEFAULT1)))
