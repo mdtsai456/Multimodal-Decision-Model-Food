@@ -161,12 +161,13 @@ function paintBoxedCanvas(canvas, items) {
       const color = colorForIndex(index, items.length);
       const px = x * w;
       const py = y * h;
-      const pw = bw * w;
-      const ph = bh * h;
+      const pw = bw * w; // bbox 寬（標籤置中用；暫時不畫外框）
+      const ph = bh * h; // bbox 高（標籤偏上用；暫時不畫外框）
 
-      ctx.lineWidth = Math.max(2, Math.round(w / 220));
-      ctx.strokeStyle = color;
-      ctx.strokeRect(px, py, pw, ph);
+      // 暫時不顯示外框矩形，只保留菜名標籤（bbox 座標仍用來定位標籤）
+      // ctx.lineWidth = Math.max(2, Math.round(w / 220));
+      // ctx.strokeStyle = color;
+      // ctx.strokeRect(px, py, pw, ph);
 
       const label = item.name || "";
       if (!label) return;
@@ -174,11 +175,25 @@ function paintBoxedCanvas(canvas, items) {
       const pad = 6;
       const tw = ctx.measureText(label).width;
       const th = Math.max(16, Math.round(w / 36));
-      const ly = Math.max(0, py - th - 4);
+
+      // --- 原本：標籤貼在外框左上角上方 ---
+      // const ly = Math.max(0, py - th - 4);
+      // ctx.fillStyle = color;
+      // ctx.fillRect(px, ly, tw + pad * 2, th + 4);
+      // ctx.fillStyle = "#fff";
+      // ctx.fillText(label, px + pad, ly + th - 2);
+
+      // --- 現在：標籤在 bbox 水平置中、垂直中間偏上 ---
+      const labelW = tw + pad * 2;
+      const labelH = th + 4;
+      const lx = px + (pw - labelW) / 2;
+      const ly = py + ph * 0.2 - labelH / 2;
+      const clampedX = Math.max(0, Math.min(w - labelW, lx));
+      const clampedY = Math.max(0, Math.min(h - labelH, ly));
       ctx.fillStyle = color;
-      ctx.fillRect(px, ly, tw + pad * 2, th + 4);
+      ctx.fillRect(clampedX, clampedY, labelW, labelH);
       ctx.fillStyle = "#fff";
-      ctx.fillText(label, px + pad, ly + th - 2);
+      ctx.fillText(label, clampedX + pad, clampedY + th - 2);
     });
   };
   img.src = previewUrl;

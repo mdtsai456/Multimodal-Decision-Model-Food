@@ -351,12 +351,13 @@ function paintRecordCanvas(canvas, originalUrl, dishes) {
       const color = colorForIndex(index, dishes.length);
       const px = x * w;
       const py = y * h;
-      const pw = bw * w;
-      const ph = bh * h;
+      const pw = bw * w; // bbox 寬（標籤置中用；暫時不畫外框）
+      const ph = bh * h; // bbox 高（標籤偏上用；暫時不畫外框）
 
-      ctx.lineWidth = Math.max(2, Math.round(w / 220));
-      ctx.strokeStyle = color;
-      ctx.strokeRect(px, py, pw, ph);
+      // 暫時不顯示外框矩形，只保留菜名標籤（bbox 座標仍用來定位標籤）
+      // ctx.lineWidth = Math.max(2, Math.round(w / 220));
+      // ctx.strokeStyle = color;
+      // ctx.strokeRect(px, py, pw, ph);
 
       const label = item.dish_name || item.name || "";
       if (!label) return;
@@ -365,17 +366,31 @@ function paintRecordCanvas(canvas, originalUrl, dishes) {
       const pad = 6;
       const tw = ctx.measureText(label).width;
       const th = Math.max(16, Math.round(w / 36));
-      const ly = Math.max(0, py - th - 4);
+
+      // --- 原本：標籤貼在外框左上角上方 ---
+      // const ly = Math.max(0, py - th - 4);
+      // ctx.fillStyle = color;
+      // ctx.fillRect(px, ly, tw + pad * 2, th + 4);
+      // ctx.fillStyle = "#fff";
+      // ctx.fillText(label, px + pad, ly + th - 2);
+
+      // --- 現在：標籤在 bbox 水平置中、垂直中間偏上 ---
+      const labelW = tw + pad * 2;
+      const labelH = th + 4;
+      const lx = px + (pw - labelW) / 2;
+      const ly = py + ph * 0.2 - labelH / 2;
+      const clampedX = Math.max(0, Math.min(w - labelW, lx));
+      const clampedY = Math.max(0, Math.min(h - labelH, ly));
       ctx.fillStyle = color;
-      ctx.fillRect(px, ly, tw + pad * 2, th + 4);
+      ctx.fillRect(clampedX, clampedY, labelW, labelH);
       ctx.fillStyle = "#fff";
-      ctx.fillText(label, px + pad, ly + th - 2);
+      ctx.fillText(label, clampedX + pad, clampedY + th - 2);
     });
   };
   img.src = originalUrl;
 }
 
-// 管理頁 canvas 只需菜名與 bbox
+// 管理頁 canvas：主候選菜名 + bbox
 function toAdminResult1(dishes) {
   return (dishes || []).map((d) => ({
     dish_name: d.dish_name,
@@ -383,18 +398,53 @@ function toAdminResult1(dishes) {
   }));
 }
 
-// 組出展開區 HTML：雙結果用預存圖；否則優先 canvas；再退回單張標註圖
+// 管理頁 canvas：有次佳則改用次佳菜名（bbox 共用）
+function toAdminResult2(dishes) {
+  return (dishes || []).map((d) => {
+    const alt = d.alternative;
+    if (alt && alt.dish_name) {
+      return { dish_name: alt.dish_name, bbox: d.bbox };
+    }
+    return { dish_name: d.dish_name, bbox: d.bbox };
+  });
+}
+
+// 組出展開區 HTML：優先 canvas（無外框、標籤中間偏上）；缺資料才退回預存標註圖
 function renderRecordDetail(detail) {
   const dishes = detail.dishes || [];
   const bust = Date.now(); // 避免瀏覽器快取舊標註圖
   const hasDual = Boolean(detail.has_dual);
-  // 雙結果直接用預存 result1/result2 標註圖（部署環境 canvas 重畫較不穩）
-  const useDualImgs = hasDual && detail.boxed1_url && detail.boxed2_url;
-  const canCanvas =
-    !useDualImgs && Boolean(detail.original_url) && dishesHaveBbox(dishes);
+  const canCanvas = Boolean(detail.original_url) && dishesHaveBbox(dishes);
+  // 雙結果且能用 canvas → 兩張 canvas；否則若有預存圖再退回 img
+  const useDualCanvas = canCanvas && hasDual;
+  const useSingleCanvas = canCanvas && !hasDual;
+
+  // --- 原本：雙結果直接用預存 result1/result2 標註圖（含外框）---
+  // const useDualImgs = hasDual && detail.boxed1_url && detail.boxed2_url;
+  // const canCanvasOld =
+  //   !useDualImgs && Boolean(detail.original_url) && dishesHaveBbox(dishes);
+
   let imageHtml = "";
 
-  if (useDualImgs) {
+  if (useDualCanvas) {
+    imageHtml = `
+      <div class="result-boxed-pair">
+        <figure class="result-boxed-fig">
+          <canvas class="result-canvas record-result-canvas-1" aria-label="result1 標註圖"></canvas>
+          <figcaption>result1</figcaption>
+        </figure>
+        <figure class="result-boxed-fig">
+          <canvas class="result-canvas record-result-canvas-2" aria-label="result2 標註圖"></canvas>
+          <figcaption>result2</figcaption>
+        </figure>
+      </div>`;
+  } else if (useSingleCanvas) {
+    imageHtml = `
+      <div class="result-image-wrap">
+        <canvas class="result-canvas record-result-canvas" aria-label="辨識結果標註圖"></canvas>
+      </div>`;
+  } else if (hasDual && detail.boxed1_url && detail.boxed2_url) {
+    // 退回：無法 canvas 時仍用預存雙結果圖
     imageHtml = `
       <div class="result-boxed-pair">
         <figure class="result-boxed-fig">
@@ -406,12 +456,8 @@ function renderRecordDetail(detail) {
           <figcaption>result2</figcaption>
         </figure>
       </div>`;
-  } else if (canCanvas) {
-    imageHtml = `
-      <div class="result-image-wrap">
-        <canvas class="result-canvas record-result-canvas" aria-label="辨識結果標註圖"></canvas>
-      </div>`;
   } else {
+    // 退回：單張預存標註圖
     imageHtml = `
       <div class="result-image-wrap">
         <img class="result-boxed-img record-boxed-single" src="${escapeHtml(detail.boxed_url)}?t=${bust}" alt="辨識標註圖" />
@@ -464,6 +510,7 @@ function renderRecordDetail(detail) {
       ${empty}
     </div>`,
     canCanvas,
+    useDualCanvas,
     originalUrl: detail.original_url,
     dishes,
   };
@@ -561,9 +608,16 @@ recordsList.addEventListener("click", async (e) => {
     const painted = renderRecordDetail(detail);
     body.innerHTML = painted.html;
     if (painted.canCanvas && painted.originalUrl) {
-      const canvas = body.querySelector(".record-result-canvas");
-      if (canvas) {
-        paintRecordCanvas(canvas, painted.originalUrl, toAdminResult1(painted.dishes));
+      if (painted.useDualCanvas) {
+        const c1 = body.querySelector(".record-result-canvas-1");
+        const c2 = body.querySelector(".record-result-canvas-2");
+        if (c1) paintRecordCanvas(c1, painted.originalUrl, toAdminResult1(painted.dishes));
+        if (c2) paintRecordCanvas(c2, painted.originalUrl, toAdminResult2(painted.dishes));
+      } else {
+        const canvas = body.querySelector(".record-result-canvas");
+        if (canvas) {
+          paintRecordCanvas(canvas, painted.originalUrl, toAdminResult1(painted.dishes));
+        }
       }
     }
   } catch (err) {
