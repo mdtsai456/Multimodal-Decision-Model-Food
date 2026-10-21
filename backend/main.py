@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # --- 第三方套件 ---
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 # Depends：注入依賴（如 get_db、require_admin）
 # FastAPI：建立 Web API 應用
 # File / UploadFile：接收上傳檔（Excel、圖片）
@@ -44,7 +44,7 @@ from .result_store import (
     load_record_detail,       # 讀單筆紀錄詳情（圖、菜色、bbox）
     save_recognition_bundle,  # 辨識後存原圖／標註圖／result.json
 )
-from .vision import CLOSE_CONFIDENCE_DELTA, recognize_dishes  # 呼叫 AI 模型辨識餐盤
+from .vision import CLOSE_CONFIDENCE_DELTA, recognize_dishes, resolve_engine
 
 # 啟動時依 model 建立資料表（若已存在則略過）
 Base.metadata.create_all(bind=engine)
@@ -180,8 +180,14 @@ async def import_excel(
 @app.post("/api/predict", response_model=PredictResponse)  # POST；回傳格式固定為 PredictResponse
 async def predict_plate(
     file: UploadFile = File(...),   # 上傳的餐盤圖片（必填）
+    engine: str | None = Form(None),  # 這次改走 chat 或 jev；不送就用環境變數
     db: Session = Depends(get_db),  # 自動注入資料庫連線
 ):
+    try:
+        resolved = resolve_engine(engine)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     # 不是圖片（或沒有 content_type）→ 400 拒絕
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="請上傳圖片檔")
@@ -197,7 +203,7 @@ async def predict_plate(
     dishes = db.query(Dish).order_by(Dish.dish_code.asc()).all()
     try:
         # 呼叫 vision：圖片 + 菜單 → 模型辨識
-        result = recognize_dishes(saved_path, dishes)
+        result = recognize_dishes(saved_path, dishes, resolved)
     except Exception as exc:
         # 辨識失敗：刪掉暫存圖，回 502
         if saved_path.exists():

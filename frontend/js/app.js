@@ -161,13 +161,12 @@ function paintBoxedCanvas(canvas, items) {
       const color = colorForIndex(index, items.length);
       const px = x * w;
       const py = y * h;
-      const pw = bw * w; // bbox 寬（標籤置中用；暫時不畫外框）
-      const ph = bh * h; // bbox 高（標籤偏上用；暫時不畫外框）
+      const pw = bw * w;
+      const ph = bh * h;
 
-      // 暫時不顯示外框矩形，只保留菜名標籤（bbox 座標仍用來定位標籤）
-      // ctx.lineWidth = Math.max(2, Math.round(w / 220));
-      // ctx.strokeStyle = color;
-      // ctx.strokeRect(px, py, pw, ph);
+      ctx.lineWidth = Math.max(2, Math.round(w / 220));
+      ctx.strokeStyle = color;
+      ctx.strokeRect(px, py, pw, ph);
 
       const label = item.name || "";
       if (!label) return;

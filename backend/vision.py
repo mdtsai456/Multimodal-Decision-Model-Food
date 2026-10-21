@@ -2,14 +2,19 @@
 
 # --- 標準函式庫 ---
 import base64      # 圖片轉成 base64，才能塞進 API 請求
+import io          # 把縮放後的 JPEG 留在記憶體
 import json        # 解析模型回傳的 JSON
 import mimetypes   # 依副檔名判斷 image/jpeg、image/png 等
 import os          # 讀取 .env 裡的環境變數
 import re          # 從模型文字中抽出 ```json ... ``` 區塊
+from enum import Enum
 from pathlib import Path
+from typing import assert_never
 
 # --- AI 客戶端（連 Zeabur AI Hub，目前用 OpenAI 格式呼叫 GPT）---
+import httpx
 from openai import OpenAI
+from PIL import Image, ImageOps
 
 from .bbox_adjust import (
     BBOX_BOTTOM_Y_SHIFT,
@@ -25,11 +30,40 @@ BASE_URL = os.getenv("ZEABUR_AI_HUB_BASE_URL", "https://hnd1.aihub.zeabur.ai/")
 MODEL = os.getenv("AI_MODEL", "gpt-5.6-luna")
 # 兩道候選信心差 ≤ 此值時視為「相近」，前端拆成雙條、後端存 result1/result2
 CLOSE_CONFIDENCE_DELTA = float(os.getenv("CLOSE_CONFIDENCE_DELTA", "0.30"))
+JEV_MODEL = os.getenv("JEV_MODEL", "typesafe/jev-1.14")
+JEV_DECISIONS_URL = os.getenv(
+    "JEV_DECISIONS_URL", "https://openrouter.ai/api/alpha/decisions"
+)
+NOUL_PRESENT_MIN = float(os.getenv("NOUL_PRESENT_MIN", "0.50"))
+INFERENCE_ENGINE = os.getenv("INFERENCE_ENGINE", "chat")
+# 兩框重疊到這個程度，Jev 視為同一格食物
+JEV_SAME_CELL_IOU = 0.45
 print(
-    f"[config] AI_MODEL={MODEL} CLOSE_CONFIDENCE_DELTA={CLOSE_CONFIDENCE_DELTA} "
+    f"[config] INFERENCE_ENGINE={INFERENCE_ENGINE} AI_MODEL={MODEL} "
+    f"JEV_MODEL={JEV_MODEL} NOUL_PRESENT_MIN={NOUL_PRESENT_MIN} "
+    f"CLOSE_CONFIDENCE_DELTA={CLOSE_CONFIDENCE_DELTA} "
     f"BBOX_TOP_Y_SHIFT={BBOX_TOP_Y_SHIFT} BBOX_BOTTOM_Y_SHIFT={BBOX_BOTTOM_Y_SHIFT} "
     f"(legacy BBOX_Y_SHIFT={BBOX_Y_SHIFT})"
 )
+
+
+class InferenceEngine(str, Enum):
+    """辨識走看圖對話，或走 Jev 決策。"""
+
+    CHAT = "chat"
+    JEV = "jev"
+
+
+def resolve_engine(override: str | None) -> InferenceEngine:
+    """表單有指定就用表單，否則用環境變數；空白視為 chat。"""
+    raw = override if override is not None else os.getenv("INFERENCE_ENGINE", "")
+    text = (raw or "").strip().lower()
+    if not text:
+        return InferenceEngine.CHAT
+    try:
+        return InferenceEngine(text)
+    except ValueError as exc:
+        raise ValueError("engine 只接受 chat 或 jev") from exc
 
 
 # 依檔名猜測圖片 MIME 類型；猜不到就當 jpeg
@@ -238,8 +272,6 @@ def _normalize_bbox(raw) -> list[float] | None:
 
 def _ensure_upright_image(path: Path) -> None:
     """依 EXIF 轉正並覆寫檔案，讓模型看圖與畫框用同一像素方向。"""
-    from PIL import Image, ImageOps
-
     with Image.open(path) as img:
         oriented = ImageOps.exif_transpose(img) # 打開圖片後，依 EXIF 的旋轉／鏡像標記，把像素真正轉正。
         # 轉成 RGB 存回，去掉方向標記造成的錯位
@@ -422,8 +454,200 @@ def _debug_print_close_candidates(predictions: list[dict]) -> None:
             print(f"[debug] 最佳/次佳: {best} / 無次佳")
 
 
-# 主流程：圖片 + 菜單 → 呼叫模型 → 整理成 predictions
-def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
+def _fit_jev_size(width: int, height: int) -> tuple[int, int]:
+    """把邊長收進 Jev 的 256～1568，總像素收進 78,400～2,458,624。"""
+    scale = 1.0
+    long_side = max(width, height)
+    if long_side > 1568:
+        scale = 1568 / long_side
+    pixels = width * height
+    if pixels * scale * scale > 2_458_624:
+        scale = min(scale, (2_458_624 / pixels) ** 0.5)
+    fitted_w = width * scale
+    fitted_h = height * scale
+    grow = 1.0
+    short_side = min(fitted_w, fitted_h)
+    if short_side > 0 and short_side < 256:
+        grow = max(grow, 256 / short_side)
+    fitted_pixels = fitted_w * fitted_h
+    if fitted_pixels > 0 and fitted_pixels < 78_400:
+        grow = max(grow, (78_400 / fitted_pixels) ** 0.5)
+    grown_long = max(fitted_w, fitted_h) * grow
+    grown_pixels = fitted_pixels * grow * grow
+    if grow > 1 and grown_long <= 1568 and grown_pixels <= 2_458_624:
+        scale *= grow
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
+def _jpeg_data_url_for_jev(path: Path) -> str:
+    """轉成 Jev 接受的 JPEG data URL。相對座標仍對得上轉正後的原圖。"""
+    with Image.open(path) as img:
+        rgb = img.convert("RGB")
+        fitted = _fit_jev_size(*rgb.size)
+        if fitted != rgb.size:
+            rgb = rgb.resize(fitted, Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        rgb.save(buffer, format="JPEG", quality=90)
+    encoded = base64.standard_b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _jev_questions(dishes: list[Dish]) -> dict:
+    """每道菜一題在不在、一題外框。鍵用資料庫 id。"""
+    questions: dict = {}
+    for dish in dishes:
+        appearance = _clip(dish.cooking_method, 200)
+        present = f"照片中看得到一道「{dish.name}」。"
+        if appearance:
+            present += f"外觀：{appearance}"
+        questions[f"present_{dish.id}"] = {"type": "noul", "instructions": present}
+        questions[f"box_{dish.id}"] = {
+            "type": "box",
+            "instructions": (
+                f"只框住這一道{dish.name}自己的範圍，貼著食物邊緣，不要框進旁邊的另一道菜"
+            ),
+        }
+    return questions
+
+
+def _bbox_from_jev_edges(edges) -> list[float] | None:
+    """Jev 的四邊轉成現有檢查函式吃的角點，再得到 [x, y, w, h]。"""
+    if not isinstance(edges, dict):
+        return None
+    try:
+        left = float(edges["left"])
+        top = float(edges["top"])
+        right = float(edges["right"])
+        bottom = float(edges["bottom"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if right <= left or bottom <= top:
+        return None
+    return _normalize_bbox([left, top, right, bottom])
+
+
+def _second_view(pred: dict) -> dict:
+    return {
+        "name": pred["name"],
+        "dish_id": pred["dish_id"],
+        "dish_code": pred["dish_code"],
+        "confidence": pred["confidence"],
+        "reason": pred.get("reason"),
+    }
+
+
+def _with_second(primary: dict, other: dict) -> dict:
+    """次佳一律記下；差距夠小才讓前端顯示雙結果。"""
+    merged = dict(primary)
+    second = _second_view(other)
+    merged["second_best"] = second
+    delta = abs(float(merged["confidence"]) - float(other["confidence"]))
+    if delta <= CLOSE_CONFIDENCE_DELTA:
+        merged["alternative"] = second
+    return merged
+
+
+def _merge_jev_cells(primaries: list[dict]) -> list[dict]:
+    """IoU 夠高就合成同一格，不看信心差。"""
+    remaining = [dict(item) for item in primaries]
+    merged: list[dict] = []
+    while remaining:
+        primary = remaining.pop(0)
+        index = 0
+        while index < len(remaining):
+            other = remaining[index]
+            if _bbox_iou(primary.get("bbox"), other.get("bbox")) < JEV_SAME_CELL_IOU:
+                index += 1
+                continue
+            if "second_best" not in primary:
+                primary = _with_second(primary, other)
+            del remaining[index]
+        merged.append(primary)
+    return merged
+
+
+def _fill_rejected_seconds(
+    primaries: list[dict], rejected: list[dict]
+) -> list[dict]:
+    """主結果還沒有次佳時，從沒過門檻、但框在同一格的菜補上。"""
+    filled: list[dict] = []
+    for primary in primaries:
+        if primary.get("second_best") or not rejected:
+            filled.append(primary)
+            continue
+        neighbors = [
+            item
+            for item in rejected
+            if _bbox_iou(primary.get("bbox"), item.get("bbox")) >= JEV_SAME_CELL_IOU
+        ]
+        if not neighbors:
+            filled.append(primary)
+            continue
+        best = max(neighbors, key=lambda item: float(item["confidence"]))
+        filled.append(_with_second(primary, best))
+    return filled
+
+
+def _predictions_from_jev(
+    dishes: list[Dish],
+    answers: dict,
+    present_min: float,
+) -> list[dict]:
+    """Noul 決定留不留，Box 只提供外框。"""
+    primaries: list[dict] = []
+    rejected: list[dict] = []
+    for dish in dishes:
+        present = answers.get(f"present_{dish.id}")
+        box_answer = answers.get(f"box_{dish.id}")
+        noul_raw = present.get("noul") if isinstance(present, dict) else None
+        try:
+            noul = float(noul_raw)
+        except (TypeError, ValueError):
+            print(f"[debug] {dish.name}: 沒有 Noul → 丟掉")
+            continue
+        noul = max(0.0, min(1.0, noul))
+        edges = box_answer.get("box") if isinstance(box_answer, dict) else None
+        bbox = _bbox_from_jev_edges(edges)
+        pred = _prediction_core(dish, {"confidence": noul, "reason": None}, bbox)
+        if noul >= present_min and bbox is not None:
+            print(f"[debug] {dish.name}: Noul {noul:.2f} → 留下")
+            primaries.append(pred)
+        else:
+            why = "低於門檻" if noul < present_min else "外框無效"
+            print(f"[debug] {dish.name}: Noul {noul:.2f} → 丟掉（{why}）")
+            if bbox is not None:
+                rejected.append(pred)
+    primaries.sort(key=lambda item: float(item["confidence"]), reverse=True)
+    merged = _merge_jev_cells(primaries)
+    return _fill_rejected_seconds(merged, rejected)
+
+
+def _post_jev_decisions(body: dict) -> dict:
+    if not API_KEY:
+        raise RuntimeError("ZEABUR_AI_HUB_API_KEY is required")
+    response = httpx.post(
+        JEV_DECISIONS_URL,
+        headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        },
+        json=body,
+        timeout=120.0,
+    )
+    if response.status_code != 200:
+        detail = response.text[:300].replace("\n", " ")
+        raise RuntimeError(f"Decisions API HTTP {response.status_code}: {detail}")
+    try:
+        payload = response.json()
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Decisions API 回覆不是 JSON") from exc
+    if not isinstance(payload, dict) or "answers" not in payload:
+        raise RuntimeError("Decisions API 回覆缺少 answers")
+    return payload
+
+
+def recognize_dishes_chat(image_path: Path, dishes: list[Dish]) -> dict:
+    """看圖對話：沿用原本的提示詞、對菜單與相近合併。"""
     if not dishes:
         return {"predictions": [], "model": MODEL, "raw": "菜單為空"}
 
@@ -478,3 +702,53 @@ def recognize_dishes(image_path: Path, dishes: list[Dish]) -> dict:
     print(f"[debug] 主預測共 {len(predictions)} 道: {[p.get('name') for p in predictions]}")
     _debug_print_close_candidates(predictions)
     return {"predictions": predictions, "model": MODEL, "raw": raw_text}
+
+
+def recognize_dishes_jev(image_path: Path, dishes: list[Dish]) -> dict:
+    """Jev：每道菜問在不在與外框，同一格再合併。"""
+    if not dishes:
+        return {"predictions": [], "model": JEV_MODEL, "raw": "菜單為空"}
+
+    _ensure_upright_image(image_path)
+    body = {
+        "model": JEV_MODEL,
+        "state": [
+            "餐盤照片。請只依照片判斷。",
+            {
+                "type": "image_url",
+                "image_url": {"url": _jpeg_data_url_for_jev(image_path)},
+            },
+        ],
+        "questions": _jev_questions(dishes),
+    }
+    payload = _post_jev_decisions(body)
+    predictions = _predictions_from_jev(
+        dishes, payload["answers"], NOUL_PRESENT_MIN
+    )
+    _nudge_bboxes(predictions)
+    print(f"[debug] 主預測共 {len(predictions)} 道: {[p.get('name') for p in predictions]}")
+    _debug_print_close_candidates(predictions)
+    return {"predictions": predictions, "model": JEV_MODEL, "raw": payload}
+
+
+def _model_for(engine: InferenceEngine) -> str:
+    if engine is InferenceEngine.CHAT:
+        return MODEL
+    if engine is InferenceEngine.JEV:
+        return JEV_MODEL
+    assert_never(engine)
+
+
+def recognize_dishes(
+    image_path: Path,
+    dishes: list[Dish],
+    engine: InferenceEngine = InferenceEngine.CHAT,
+) -> dict:
+    """依引擎辨識。菜單是空的就不打外部 API。"""
+    if not dishes:
+        return {"predictions": [], "model": _model_for(engine), "raw": "菜單為空"}
+    if engine is InferenceEngine.CHAT:
+        return recognize_dishes_chat(image_path, dishes)
+    if engine is InferenceEngine.JEV:
+        return recognize_dishes_jev(image_path, dishes)
+    assert_never(engine)
