@@ -104,14 +104,52 @@ healthWeb/
 
 | 變數 | 說明 |
 |------|------|
-| `ZEABUR_AI_HUB_API_KEY` | Zeabur AI Hub API Key |
-| `ZEABUR_AI_HUB_BASE_URL` | 例如 `https://hnd1.aihub.zeabur.ai/` |
-| `AI_MODEL` | 目前為 `gpt-5.6-luna`（可改其他 Zeabur 支援模型，如 `gpt-5.6-terra`） |
+| `ZEABUR_AI_HUB_API_KEY` | 看圖對話用的 API Key。改走 Jev 時，這把 key 要換成 OpenRouter 的 key |
+| `ZEABUR_AI_HUB_BASE_URL` | 看圖對話的位址，例如 `https://hnd1.aihub.zeabur.ai/` |
+| `AI_MODEL` | 看圖對話的模型，例如 `gpt-5.6-luna`。Jev 不讀這個變數 |
+| `INFERENCE_ENGINE` | `chat`（預設，看圖對話）或 `jev` |
+| `JEV_MODEL` | Jev 模型，預設 `typesafe/jev-1.14` |
+| `JEV_DECISIONS_URL` | Decisions API，預設 `https://openrouter.ai/api/alpha/decisions` |
+| `NOUL_PRESENT_MIN` | Jev 低於這個值就當這道菜不在盤上，預設 `0.50` |
+| `CLOSE_CONFIDENCE_DELTA` | 同一格兩道菜的信心差在這個值以內才顯示雙結果，預設 `0.30` |
 | `ADMIN_PASSWORD` | 管理員登入密碼 |
 | `SECRET_KEY` | 簽發管理 token 用的密鑰 |
 
 可複製 `.env.example` 再填入真實值。 
-修改 `AI_MODEL` 後請**重啟伺服器**才會生效。
+修改 `.env` 後請**重啟伺服器**才會生效。
+
+---
+
+## 使用 Jev 辨識
+
+網頁還是同一頁，沒有引擎開關。預設走看圖對話。要整站改走 Jev，在 `.env` 設：
+
+```env
+INFERENCE_ENGINE=jev
+JEV_MODEL=typesafe/jev-1.14
+JEV_DECISIONS_URL=https://openrouter.ai/api/alpha/decisions
+NOUL_PRESENT_MIN=0.50
+```
+
+`ZEABUR_AI_HUB_API_KEY` 填 OpenRouter 的 key。Jev 會用它呼叫上面的 Decisions API，模型是 `typesafe/jev-1.14`。存檔後重啟：
+
+```bat
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+啟動日誌要看到 `INFERENCE_ENGINE=jev`。接著打開 http://127.0.0.1:8000/ ，上傳餐盤照片並按「開始辨識」。畫面上的百分比是這道菜在不在的分數；外框畫在食物上。
+
+只想某一次用 Jev、其餘維持看圖對話時，不要改 `INFERENCE_ENGINE`，改打 API：
+
+```bat
+curl -F "file=@餐盤.jpg" -F "engine=jev" http://127.0.0.1:8000/api/predict
+```
+
+`engine` 接受 `chat`、`jev` 或 `choice`。其他值回 400。沒帶這個欄位時，用 `.env` 的 `INFERENCE_ENGINE`。`choice` 先做與 `jev` 相同的判斷，再對重疊的食物區域用 Choice 選一個菜名，見 `docs/choice-path-spec.md`。
+
+Jev 對菜單裡的每一道菜問兩題：在不在、外框。外觀文字來自管理頁的「烹調方式」，接到「在不在」那一題，大約 200 字。分數低於 `NOUL_PRESENT_MIN` 的菜不會出現。兩個框重疊很多時合成同一格；信心差在 `CLOSE_CONFIDENCE_DELTA` 以內，畫面才會同時出現兩種菜名（result1 / result2）。
+
+判斷規則的細節寫在 `docs/inference-spec.md`。
 
 ---
 
@@ -162,7 +200,7 @@ uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 | PUT | `/api/dishes/{id}` | 更新菜色（需 token） |
 | DELETE | `/api/dishes/{id}` | 刪除菜色（需 token） |
 | POST | `/api/admin/import-excel` | 匯入 Excel，只追加（需 token） |
-| POST | `/api/predict` | 上傳餐盤圖辨識；成功後寫入 uploads 結果資料夾 |
+| POST | `/api/predict` | 上傳餐盤圖辨識。表單可加 `engine=chat` 或 `engine=jev`；成功後寫入 uploads 結果資料夾 |
 | GET | `/api/health` | 健康檢查 |
 
 管理 API 請在 Header 帶：`Authorization: Bearer <token>`。
@@ -262,6 +300,7 @@ API 進出資料格式（Pydantic），例如 `DishOut`、`PredictResponse`（�
    - `ZEABUR_AI_HUB_API_KEY`
    - `ZEABUR_AI_HUB_BASE_URL`
    - `AI_MODEL`（例如 `gpt-5.6-luna`）
+   - 若要走 Jev：`INFERENCE_ENGINE=jev`、`JEV_MODEL`、`JEV_DECISIONS_URL`、`NOUL_PRESENT_MIN`，且 API Key 須為 OpenRouter
    - `ADMIN_PASSWORD`
    - `SECRET_KEY`（請改成夠長的隨機字串）
 4. **Networking / Domain**：產生 `*.zeabur.app` 網域或綁自訂網域

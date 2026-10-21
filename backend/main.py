@@ -180,7 +180,7 @@ async def import_excel(
 @app.post("/api/predict", response_model=PredictResponse)  # POST；回傳格式固定為 PredictResponse
 async def predict_plate(
     file: UploadFile = File(...),   # 上傳的餐盤圖片（必填）
-    engine: str | None = Form(None),  # 這次改走 chat 或 jev；不送就用環境變數
+    engine: str | None = Form(None),  # 這次改走 chat、jev 或 choice；不送就用環境變數
     db: Session = Depends(get_db),  # 自動注入資料庫連線
 ):
     try:

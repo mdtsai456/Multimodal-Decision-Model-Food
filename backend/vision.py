@@ -48,10 +48,11 @@ print(
 
 
 class InferenceEngine(str, Enum):
-    """辨識走看圖對話，或走 Jev 決策。"""
+    """辨識走看圖對話、Jev，或 Jev 之後的區域 Choice。"""
 
     CHAT = "chat"
     JEV = "jev"
+    CHOICE = "choice"
 
 
 def resolve_engine(override: str | None) -> InferenceEngine:
@@ -63,7 +64,7 @@ def resolve_engine(override: str | None) -> InferenceEngine:
     try:
         return InferenceEngine(text)
     except ValueError as exc:
-        raise ValueError("engine 只接受 chat 或 jev") from exc
+        raise ValueError("engine 只接受 chat、jev 或 choice") from exc
 
 
 # 依檔名猜測圖片 MIME 類型；猜不到就當 jpeg
@@ -588,12 +589,12 @@ def _fill_rejected_seconds(
     return filled
 
 
-def _predictions_from_jev(
+def _collect_jev_hits(
     dishes: list[Dish],
     answers: dict,
     present_min: float,
-) -> list[dict]:
-    """Noul 決定留不留，Box 只提供外框。"""
+) -> tuple[list[dict], list[dict]]:
+    """Noul 過門檻且外框有效的留下，其餘能對上框的另放一袋。"""
     primaries: list[dict] = []
     rejected: list[dict] = []
     for dish in dishes:
@@ -618,6 +619,16 @@ def _predictions_from_jev(
             if bbox is not None:
                 rejected.append(pred)
     primaries.sort(key=lambda item: float(item["confidence"]), reverse=True)
+    return primaries, rejected
+
+
+def _predictions_from_jev(
+    dishes: list[Dish],
+    answers: dict,
+    present_min: float,
+) -> list[dict]:
+    """Noul 決定留不留，Box 只提供外框。"""
+    primaries, rejected = _collect_jev_hits(dishes, answers, present_min)
     merged = _merge_jev_cells(primaries)
     return _fill_rejected_seconds(merged, rejected)
 
@@ -704,13 +715,162 @@ def recognize_dishes_chat(image_path: Path, dishes: list[Dish]) -> dict:
     return {"predictions": predictions, "model": MODEL, "raw": raw_text}
 
 
-def recognize_dishes_jev(image_path: Path, dishes: list[Dish]) -> dict:
-    """Jev：每道菜問在不在與外框，同一格再合併。"""
-    if not dishes:
-        return {"predictions": [], "model": JEV_MODEL, "raw": "菜單為空"}
+_CHOICE_PAD = 0.02
+_CHOICE_STATE = "這是餐盤上的一個食物區域。請只依這個區域判斷。"
+_CHOICE_INSTRUCTIONS = "這個區域的主要食物最符合哪一項？依食物本身的外觀判斷。"
+_CHOICE_OTHER = "其他"
+_CHOICE_OTHER_TEXT = "以上都不是這個區域的主要食物。"
+_CHOICE_BLANK = "菜單中的這道菜"
 
-    _ensure_upright_image(image_path)
-    body = {
+
+def _expand_choice_box(bbox: list[float]) -> list[float]:
+    """裁圖前四邊各外擴一點，並夾在整張圖裡面。"""
+    x, y, width, height = [float(value) for value in bbox]
+    left = max(0.0, x - _CHOICE_PAD)
+    top = max(0.0, y - _CHOICE_PAD)
+    right = min(1.0, x + width + _CHOICE_PAD)
+    bottom = min(1.0, y + height + _CHOICE_PAD)
+    return [
+        round(left, 4),
+        round(top, 4),
+        round(right - left, 4),
+        round(bottom - top, 4),
+    ]
+
+
+def _group_choice_regions(primaries: list[dict]) -> list[dict]:
+    """重疊的框合成一格，並留下這一格的全部候選。"""
+    remaining = [dict(item) for item in primaries]
+    regions: list[dict] = []
+    while remaining:
+        primary = remaining.pop(0)
+        candidates = [primary]
+        index = 0
+        while index < len(remaining):
+            other = remaining[index]
+            if _bbox_iou(primary.get("bbox"), other.get("bbox")) < JEV_SAME_CELL_IOU:
+                index += 1
+                continue
+            candidates.append(other)
+            del remaining[index]
+        regions.append(
+            {
+                "bbox": list(primary["bbox"]),
+                "primary": primary,
+                "candidates": candidates,
+            }
+        )
+    return regions
+
+
+def _jpeg_data_url_for_choice_crop(path: Path, bbox: list[float]) -> str:
+    """依轉正後的整張圖裁出這一格，再套用 Jev 的 JPEG 尺寸。"""
+    x, y, width, height = _expand_choice_box(bbox)
+    with Image.open(path) as img:
+        rgb = img.convert("RGB")
+        image_w, image_h = rgb.size
+        left = int(round(x * image_w))
+        top = int(round(y * image_h))
+        right = int(round((x + width) * image_w))
+        bottom = int(round((y + height) * image_h))
+        right = min(image_w, max(left + 1, right))
+        bottom = min(image_h, max(top + 1, bottom))
+        cropped = rgb.crop((left, top, right, bottom))
+        fitted = _fit_jev_size(*cropped.size)
+        if fitted != cropped.size:
+            cropped = cropped.resize(fitted, Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        cropped.save(buffer, format="JPEG", quality=90)
+    encoded = base64.standard_b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/jpeg;base64,{encoded}"
+
+
+def _choice_body(
+    path: Path, region: dict, dishes_by_id: dict[int, Dish]
+) -> dict:
+    """這一格的裁圖，加上候選菜與「其他」。"""
+    criteria: dict[str, str] = {}
+    for candidate in region["candidates"]:
+        dish = dishes_by_id[candidate["dish_id"]]
+        appearance = _clip(dish.cooking_method, 200)
+        criteria[dish.name] = appearance or _CHOICE_BLANK
+    criteria[_CHOICE_OTHER] = _CHOICE_OTHER_TEXT
+    return {
+        "model": JEV_MODEL,
+        "state": [
+            _CHOICE_STATE,
+            {
+                "type": "image_url",
+                "image_url": {"url": _jpeg_data_url_for_choice_crop(path, region["bbox"])},
+            },
+        ],
+        "questions": {
+            "region": {
+                "type": "choice",
+                "instructions": _CHOICE_INSTRUCTIONS,
+                "criteria": criteria,
+            }
+        },
+    }
+
+
+def _choice_region_answer(payload: dict) -> dict:
+    answers = payload.get("answers") if isinstance(payload, dict) else None
+    answer = answers.get("region") if isinstance(answers, dict) else None
+    probabilities = answer.get("probabilities") if isinstance(answer, dict) else None
+    if not isinstance(answer, dict) or "choice" not in answer or not isinstance(probabilities, dict):
+        raise RuntimeError("Decisions API 回覆缺少 answers.region")
+    return answer
+
+
+def _log_choice_probabilities(probabilities: dict) -> None:
+    ranked = sorted(
+        probabilities.items(),
+        key=lambda item: float(item[1]),
+        reverse=True,
+    )
+    text = " / ".join(f"{name} {float(prob):.2f}" for name, prob in ranked)
+    print(f"[debug] choice {text}")
+
+
+def _apply_choice_answer(
+    region: dict, answer: dict, dishes_by_id: dict[int, Dish]
+) -> dict | None:
+    """用選項機率換掉這一格的菜名。選到「其他」就拿掉這一格。"""
+    probabilities = answer["probabilities"]
+    _log_choice_probabilities(probabilities)
+    selected = answer["choice"]
+    if selected == _CHOICE_OTHER:
+        return None
+    by_name = {
+        dishes_by_id[candidate["dish_id"]].name: candidate
+        for candidate in region["candidates"]
+    }
+    if selected not in by_name or selected not in probabilities:
+        raise RuntimeError("Decisions API 回覆缺少 answers.region")
+    dish = dishes_by_id[by_name[selected]["dish_id"]]
+    chosen = _prediction_core(
+        dish,
+        {"confidence": float(probabilities[selected]), "reason": None},
+        list(region["bbox"]),
+    )
+    runners: list[tuple[float, dict]] = []
+    for candidate in region["candidates"]:
+        name = candidate["name"]
+        if name == selected or name not in probabilities:
+            continue
+        runners.append((float(probabilities[name]), candidate))
+    if not runners:
+        return chosen
+    probability, second = max(runners, key=lambda item: item[0])
+    alternate = dict(second)
+    alternate["confidence"] = probability
+    alternate["reason"] = None
+    return _with_second(chosen, alternate)
+
+
+def _stage1_body(image_path: Path, dishes: list[Dish]) -> dict:
+    return {
         "model": JEV_MODEL,
         "state": [
             "餐盤照片。請只依照片判斷。",
@@ -721,7 +881,15 @@ def recognize_dishes_jev(image_path: Path, dishes: list[Dish]) -> dict:
         ],
         "questions": _jev_questions(dishes),
     }
-    payload = _post_jev_decisions(body)
+
+
+def recognize_dishes_jev(image_path: Path, dishes: list[Dish]) -> dict:
+    """Jev：每道菜問在不在與外框，同一格再合併。"""
+    if not dishes:
+        return {"predictions": [], "model": JEV_MODEL, "raw": "菜單為空"}
+
+    _ensure_upright_image(image_path)
+    payload = _post_jev_decisions(_stage1_body(image_path, dishes))
     predictions = _predictions_from_jev(
         dishes, payload["answers"], NOUL_PRESENT_MIN
     )
@@ -731,10 +899,49 @@ def recognize_dishes_jev(image_path: Path, dishes: list[Dish]) -> dict:
     return {"predictions": predictions, "model": JEV_MODEL, "raw": payload}
 
 
+def recognize_dishes_choice(image_path: Path, dishes: list[Dish]) -> dict:
+    """第一段與 Jev 相同。一格有兩道以上候選時，才裁圖做 Choice。"""
+    if not dishes:
+        return {"predictions": [], "model": JEV_MODEL, "raw": "菜單為空"}
+
+    _ensure_upright_image(image_path)
+    stage1 = _post_jev_decisions(_stage1_body(image_path, dishes))
+    primaries, rejected = _collect_jev_hits(
+        dishes, stage1["answers"], NOUL_PRESENT_MIN
+    )
+    dishes_by_id = {dish.id: dish for dish in dishes}
+    predictions: list[dict] = []
+    choice_payloads: list[dict] = []
+    for region in _group_choice_regions(primaries):
+        if len(region["candidates"]) < 2:
+            kept = _fill_rejected_seconds([region["primary"]], rejected)
+            print(f"[debug] choice 略過 {kept[0]['name']}，候選只有一道")
+            predictions.extend(kept)
+            continue
+        payload = _post_jev_decisions(
+            _choice_body(image_path, region, dishes_by_id)
+        )
+        choice_payloads.append(payload)
+        chosen = _apply_choice_answer(
+            region, _choice_region_answer(payload), dishes_by_id
+        )
+        if chosen is not None:
+            predictions.append(chosen)
+    predictions.sort(key=lambda item: float(item["confidence"]), reverse=True)
+    _nudge_bboxes(predictions)
+    print(f"[debug] 主預測共 {len(predictions)} 道: {[p.get('name') for p in predictions]}")
+    _debug_print_close_candidates(predictions)
+    return {
+        "predictions": predictions,
+        "model": JEV_MODEL,
+        "raw": {"stage1": stage1, "choices": choice_payloads},
+    }
+
+
 def _model_for(engine: InferenceEngine) -> str:
     if engine is InferenceEngine.CHAT:
         return MODEL
-    if engine is InferenceEngine.JEV:
+    if engine is InferenceEngine.JEV or engine is InferenceEngine.CHOICE:
         return JEV_MODEL
     assert_never(engine)
 
@@ -751,4 +958,6 @@ def recognize_dishes(
         return recognize_dishes_chat(image_path, dishes)
     if engine is InferenceEngine.JEV:
         return recognize_dishes_jev(image_path, dishes)
+    if engine is InferenceEngine.CHOICE:
+        return recognize_dishes_choice(image_path, dishes)
     assert_never(engine)

@@ -21,9 +21,9 @@
 
 ## 分支選擇
 
-環境變數 `INFERENCE_ENGINE` 決定預設，只允許 `chat` 或 `jev`。沒設定時用 `chat`，現有行為不變。
+環境變數 `INFERENCE_ENGINE` 決定預設。這份規格只規定 `chat` 與 `jev`。沒設定時用 `chat`，現有行為不變。`choice` 是另一條路，見 `docs/choice-path-spec.md`，不改變下面兩條分支的結果。
 
-`POST /api/predict` 可另帶表單欄位 `engine`。有送就覆寫這一次；值不是 `chat` 或 `jev` 時回 400。沒送就用環境變數。
+`POST /api/predict` 可另帶表單欄位 `engine`。有送就覆寫這一次；值不是 `chat`、`jev` 或 `choice` 時回 400。沒送就用環境變數。
 
 `AI_MODEL` 繼續只給舊分支。Jev 用 `JEV_MODEL`，預設 `typesafe/jev-1.14`。
 
@@ -116,3 +116,4 @@ NOUL_PRESENT_MIN=0.50
 - `engine=jev` 時，若「炒青菜」0.88、「炒高麗菜」0.51，兩框 IoU ≥ 0.45：回應只有一筆主結果「炒青菜」。`second_best` 是「炒高麗菜」，沒有 `alternative`，畫面不出現雙條。若兩者變成 0.72 和 0.61，則主結果帶 `alternative`，畫面顯示雙條。
 - `engine=nope` 回 400。Jev 連線失敗回 502，上傳暫存檔不留下。
 - WebP 或帶 EXIF 旋轉的照片，標註框和轉正後的圖對得起來。
+- `engine=choice` 的驗收不在這裡，見 `docs/choice-path-spec.md`。
