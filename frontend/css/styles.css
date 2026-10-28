@@ -1,14 +1,14 @@
-/* ===== 設計變數：色彩、字型、圓角、陰影 ===== */
+/* 色彩、字型、圓角、陰影。 */
 :root {
-  --bg-1: #e8f3ee;           /* 淺綠底 */
-  --bg-2: #f7f4ef;           /* 米白底 */
-  --ink: #173028;            /* 主文字 */
-  --muted: #5d7268;          /* 次要文字 */
+  --bg-1: #e8f3ee;
+  --bg-2: #f7f4ef;
+  --ink: #173028;
+  --muted: #5d7268;
   --line: rgba(23, 48, 40, 0.12);
   --card: rgba(255, 255, 255, 0.72);
-  --primary: #1f7a5c;        /* 主按鈕綠 */
+  --primary: #1f7a5c;
   --primary-ink: #ffffff;
-  --accent: #c45c26;         /* 強調橘 */
+  --accent: #c45c26;
   --shadow: 0 18px 50px rgba(23, 48, 40, 0.1);
   --radius: 22px;
   --font-display: "Outfit", "Noto Sans TC", sans-serif;
@@ -129,7 +129,7 @@ h1 {
   max-width: 38rem;
 }
 
-/* ===== 上傳區／按鈕 ===== */
+/* 上傳區與按鈕。 */
 .upload-panel {
   display: grid;
   gap: 1rem;
@@ -274,7 +274,7 @@ h1 {
   text-align: center;
 }
 
-/* ===== 辨識結果卡片與標註圖 ===== */
+/* 辨識結果卡片與標註圖。 */
 .result-card {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -286,7 +286,7 @@ h1 {
   animation: rise 420ms ease both;
 }
 
-/* 信心相近時：兩個獨立圓角長方形並排 */
+/* 兩個結果並排。每個結果是一個圓角長方形。 */
 .result-card--split {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -403,7 +403,7 @@ textarea {
   resize: vertical;
 }
 
-/* ===== 管理頁：分頁、工具列、表格 ===== */
+/* 管理頁的分頁、工具列與表格。 */
 .admin-top {
   display: flex;
   justify-content: space-between;
@@ -634,7 +634,7 @@ textarea {
   margin-top: 0.4rem;
 }
 
-/* ===== 底部提示 toast ===== */
+/* 底部提示。 */
 .toast {
   position: fixed;
   left: 50%;

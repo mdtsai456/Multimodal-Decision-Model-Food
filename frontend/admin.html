@@ -20,7 +20,6 @@
   </header>
 
   <main class="shell admin-shell">
-    <!-- 未登入：只顯示密碼表單 -->
     <section id="login-panel" class="login-panel">
       <h1>管理員登入</h1>
       <p class="lead">輸入管理密碼以修改、刪除或匯入菜單。</p>
@@ -33,7 +32,6 @@
       </form>
     </section>
 
-    <!-- 已登入：菜單管理 / 辨識紀錄兩個分頁 -->
     <section id="admin-panel" class="admin-panel hidden">
       <div class="admin-top">
         <div class="admin-tabs" role="tablist">
@@ -43,7 +41,6 @@
         <button type="button" class="btn ghost" id="logout-btn">登出</button>
       </div>
 
-      <!-- 分頁一：Excel 匯入、編輯／刪除菜色 -->
       <div id="tab-menu" class="admin-tab-panel" role="tabpanel">
         <div class="admin-toolbar">
           <div>
@@ -75,7 +72,6 @@
         </div>
       </div>
 
-      <!-- 分頁二：依日期查看 uploads 辨識紀錄 -->
       <div id="tab-records" class="admin-tab-panel hidden" role="tabpanel">
         <div class="admin-toolbar">
           <div>
@@ -94,7 +90,6 @@
     </section>
   </main>
 
-  <!-- 編輯菜色對話框（欄位對應 Dish 資料表） -->
   <dialog id="dish-dialog" class="dish-dialog">
     <form id="dish-form" method="dialog" class="stack-form">
       <h2 id="dialog-title">編輯菜色</h2>

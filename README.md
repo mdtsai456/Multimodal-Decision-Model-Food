@@ -145,7 +145,7 @@ uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 curl -F "file=@餐盤.jpg" -F "engine=jev" http://127.0.0.1:8000/api/predict
 ```
 
-`engine` 接受 `chat`、`jev` 或 `choice`。其他值回 400。沒帶這個欄位時，用 `.env` 的 `INFERENCE_ENGINE`。`choice` 先做與 `jev` 相同的判斷，再對重疊的食物區域用 Choice 選一個菜名，見 `docs/choice-path-spec.md`。
+`engine` 只接受 `chat` 或 `jev`。其他值回 400。沒帶這個欄位時，用 `.env` 的 `INFERENCE_ENGINE`。
 
 Jev 對菜單裡的每一道菜問兩題：在不在、外框。外觀文字來自管理頁的「烹調方式」，接到「在不在」那一題，大約 200 字。分數低於 `NOUL_PRESENT_MIN` 的菜不會出現。兩個框重疊很多時合成同一格；信心差在 `CLOSE_CONFIDENCE_DELTA` 以內，畫面才會同時出現兩種菜名（result1 / result2）。
 
@@ -201,6 +201,7 @@ uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 | DELETE | `/api/dishes/{id}` | 刪除菜色（需 token） |
 | POST | `/api/admin/import-excel` | 匯入 Excel，只追加（需 token） |
 | POST | `/api/predict` | 上傳餐盤圖辨識。表單可加 `engine=chat` 或 `engine=jev`；成功後寫入 uploads 結果資料夾 |
+| POST | `/api/v1/plate-recognitions` | 同一套辨識，回傳給 [smart-athlete-nutrition](https://github.com/mdtsai456/smart-athlete-nutrition) 食物攝影機的 AI worker |
 | GET | `/api/health` | 健康檢查 |
 
 管理 API 請在 Header 帶：`Authorization: Bearer <token>`。
@@ -210,6 +211,44 @@ uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 - `predictions[]`：`name`、`dish_id`、`dish_code`、`confidence`、`reason`、`bbox`
 - `model`：實際使用的模型名稱
 - `result_dir`：本次存檔資料夾名稱（例如 `20260716_131500`）
+
+### 食物攝影機
+
+[smart-athlete-nutrition](https://github.com/mdtsai456/smart-athlete-nutrition) 的食物攝影機不直接呼叫模型。餐點先 `queue_analysis`，之後由 AI worker 拿物件儲存裡的照片來呼叫：
+
+```bash
+curl -F "file=@餐盤.jpg" http://127.0.0.1:8000/api/v1/plate-recognitions
+```
+
+辨識規則與 `/api/predict` 相同，預設引擎仍是 `.env` 的 `INFERENCE_ENGINE`。成功時 HTTP 200，正文可交給該專案的 `completeMealAnalysis`：
+
+```json
+{
+  "succeeded": true,
+  "errorMessage": null,
+  "modelName": "typesafe/jev-1.14",
+  "modelVersion": null,
+  "resultDir": "20261027_103900",
+  "items": [
+    {
+      "detectedLabel": "季節時蔬(高麗菜)",
+      "sourceFoodCode": "17",
+      "confidence": 0.87,
+      "bbox": [0.27, 0.27, 0.41, 0.315],
+      "grams": null,
+      "alternative": null
+    }
+  ]
+}
+```
+
+- `detectedLabel` 對應餐點項目的辨識菜名。`sourceFoodCode` 是這份菜單的菜色編號，用來之後對上營養平台 `Food.source_food_code`。
+- 不要把這裡的編號寫進營養平台的 `foodId`。兩邊的資料庫 id 不是同一套。
+- `grams` 一律是 `null`。這條辨識不估重量，餐點項目的估計重量留空，等使用者確認。
+- `confidence` 是 0～1。只有信心差在門檻內的次佳才會出現在 `alternative`，而且不會變成第二筆 `items`。
+- 照片裡沒有菜單中的菜，仍回 200，`items` 為空陣列。
+- 模型失敗回 502，`succeeded` 為 `false`，`errorMessage` 是原因。worker 把這份正文當成失敗的分析結果即可。
+- 不是圖片，或 `engine` 不是 `chat` / `jev`，回 400。
 
 ---
 

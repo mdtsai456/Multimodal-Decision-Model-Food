@@ -1,47 +1,16 @@
-"""請求／回應資料格式（Pydantic：檢查 API 進出的資料型別）。"""
+"""API 請求與回應的資料格式。"""
 from datetime import datetime
-from typing import Any  # raw 欄位可能是任意內容
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class DishBase(BaseModel):
-    """菜色共用欄位（對應資料庫／Excel）。"""
-
-    meal_type: str | None = None          # 餐別
-    dish_code: int | None = None          # 菜色編號
-    name: str                             # 菜名（必填）
-    composition: str | None = None        # 組成
-    cooking_method: str | None = None     # AI 烹調方式
-    oil_flavor_note: str | None = None    # 吸油調味估算
-    photo_files: list[str] | None = None  # 照片檔名列表（API 用 list，DB 存 JSON 字串）
-    tfda_name: str | None = None          # TFDA 替代名
-    calories_100g: str | None = None      # 熱量
-    protein_100g: str | None = None       # 粗蛋白
-    fat_100g: str | None = None           # 粗脂肪
-    carb_100g: str | None = None          # 總碳水
-    sodium_mg: str | None = None          # 鈉
-    potassium_mg: str | None = None       # 鉀
-    calcium_mg: str | None = None         # 鈣
-    magnesium_mg: str | None = None       # 鎂
-    fluffiness: str | None = None         # 蓬鬆度
-    weight_staple_g: float | None = None  # 主食重
-    weight_main1_g: float | None = None   # 主菜1重
-    weight_main2_g: float | None = None   # 主菜2重
-    weight_side1_g: float | None = None   # 副菜1重
-    weight_side2_g: float | None = None   # 副菜2重
-    weight_side3_g: float | None = None   # 副菜3重
-    weight_side4_g: float | None = None   # 副菜4重
-    plate_photo: str | None = None        # 完整一盤菜照片
-    notes: str | None = None              # 備註
-
-
-class DishUpdate(BaseModel):
-    """編輯菜色用：每個欄位都可選，只傳要改的即可。"""
+    """菜色欄位。photo_files 在 API 是 list。資料庫存 JSON 字串。"""
 
     meal_type: str | None = None
     dish_code: int | None = None
-    name: str | None = None
+    name: str
     composition: str | None = None
     cooking_method: str | None = None
     oil_flavor_note: str | None = None
@@ -67,31 +36,36 @@ class DishUpdate(BaseModel):
     notes: str | None = None
 
 
+class DishUpdate(DishBase):
+    """更新菜色。未送出的欄位不修改。"""
+
+    name: str | None = None
+
+
 class DishOut(DishBase):
-    """回傳給前端的菜色（在 DishBase 上多 id 與時間）。"""
+    """菜色回應。包含 id 與時間。可從 Dish 物件建立。"""
 
     id: int
     created_at: datetime | None = None
     updated_at: datetime | None = None
-    # 允許直接從 SQLAlchemy 的 Dish 物件轉換
     model_config = {"from_attributes": True}
 
 
 class AdminLogin(BaseModel):
     """管理員登入請求。"""
 
-    password: str  # 管理密碼
+    password: str
 
 
 class TokenOut(BaseModel):
-    """登入成功回傳。"""
+    """登入成功回應。token 放在 Authorization: Bearer。"""
 
-    token: str            # 之後呼叫管理 API 要帶的 Bearer token
-    message: str = "ok"   # 提示訊息
+    token: str
+    message: str = "ok"
 
 
 class PredictionAlt(BaseModel):
-    """信心相近時的次佳候選（與主預測共用 bbox）。"""
+    """次佳候選。與主預測使用同一個 bbox。"""
 
     model_config = ConfigDict(extra="ignore")
 
@@ -102,35 +76,60 @@ class PredictionAlt(BaseModel):
     reason: str | None = None
 
 
-class PredictionItem(BaseModel):
-    """單一辨識結果（一道菜）。"""
+class PredictionItem(PredictionAlt):
+    """一道菜的辨識結果。"""
 
-    model_config = ConfigDict(extra="ignore")
-
-    name: str
-    dish_id: int | None = None
-    dish_code: int | None = None
-    confidence: float = Field(..., ge=0, le=1)  # 信心分數，限制在 0～1
-    reason: str | None = None                   # 模型給的簡短理由
-    bbox: list[float] | None = None             # [x,y,w,h] 相對座標 0～1，大概外框
-    alternative: PredictionAlt | None = None    # 信心相近時採用（雙條 UI + result1/2）
-    second_best: PredictionAlt | None = None    # 模型次佳（一律回傳，方便 console debug）
+    bbox: list[float] | None = None  # [x, y, w, h]。相對整張圖。範圍是 0 到 1。
+    # 信心差在門檻內時填入。前端顯示兩筆。系統寫入 result1 與 result2。
+    alternative: PredictionAlt | None = None
+    second_best: PredictionAlt | None = None  # 同一格的次佳。只寫入記錄。
 
 
 class PredictResponse(BaseModel):
-    """餐盤辨識整份回傳。"""
+    """餐盤辨識回應。"""
 
     model_config = ConfigDict(extra="ignore")
 
-    predictions: list[PredictionItem]  # 辨識到的菜色列表
-    model: str                         # 使用的模型名稱（如 gpt-5.6-luna）
-    raw: Any | None = None             # 模型原始文字（除錯用）
-    result_dir: str | None = None      # uploads 下的結果資料夾名稱
-    close_confidence_delta: float | None = None  # 採用雙結果的信心差門檻
+    predictions: list[PredictionItem]
+    model: str
+    raw: Any | None = None
+    result_dir: str | None = None  # uploads 底下的資料夾名稱。
+    close_confidence_delta: float | None = None  # 採用 alternative 的信心差上限。
+
+
+class PlateRecognitionAlternative(BaseModel):
+    """食物攝影機的次佳菜。不另建一筆餐點項目。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    detected_label: str = Field(alias="detectedLabel")
+    source_food_code: str | None = Field(default=None, alias="sourceFoodCode")
+    confidence: float = Field(..., ge=0, le=1)
+
+
+class PlateRecognitionItem(PlateRecognitionAlternative):
+    """一筆餐點項目。不含 foodId。不含重量。"""
+
+    bbox: list[float] | None = None
+    grams: float | None = None
+    alternative: PlateRecognitionAlternative | None = None
+
+
+class PlateRecognitionOut(BaseModel):
+    """食物攝影機的辨識結果。成功時可作為分析 outcome。"""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    succeeded: bool
+    error_message: str | None = Field(default=None, alias="errorMessage")
+    model_name: str | None = Field(default=None, alias="modelName")
+    model_version: str | None = Field(default=None, alias="modelVersion")
+    items: list[PlateRecognitionItem] = []
+    result_dir: str | None = Field(default=None, alias="resultDir")
 
 
 class RecordDishAlt(BaseModel):
-    """紀錄詳情中的次佳候選。"""
+    """紀錄中的次佳候選。"""
 
     dish_id: str = ""
     dish_name: str
@@ -138,19 +137,15 @@ class RecordDishAlt(BaseModel):
     reason: str | None = None
 
 
-class RecordDishItem(BaseModel):
-    """紀錄詳情中的一道菜。"""
+class RecordDishItem(RecordDishAlt):
+    """紀錄中的一道菜。"""
 
-    dish_id: str = ""
-    dish_name: str
-    confidence: float = Field(..., ge=0, le=1)
-    reason: str | None = None
     bbox: list[float] | None = None
     alternative: RecordDishAlt | None = None
 
 
 class RecordSummary(BaseModel):
-    """某日辨識紀錄列表的一筆摘要。"""
+    """一筆辨識紀錄的摘要。"""
 
     id: str
     date: str
@@ -163,14 +158,14 @@ class RecordSummary(BaseModel):
 
 
 class RecordListOut(BaseModel):
-    """依日期列出辨識紀錄。"""
+    """指定日期的辨識紀錄清單。"""
 
     date: str
     records: list[RecordSummary]
 
 
 class RecordDetailOut(BaseModel):
-    """單筆辨識紀錄詳情（供管理員展開檢視）。"""
+    """一筆辨識紀錄的詳情。"""
 
     id: str
     date: str
