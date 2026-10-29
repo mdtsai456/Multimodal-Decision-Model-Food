@@ -1,8 +1,11 @@
 """簡單管理員驗證：密碼 + 簽章 token。"""
+from __future__ import annotations
+
 import hashlib
 import hmac
 import os
 import time
+from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -55,7 +58,7 @@ def check_admin_password(password: str) -> bool:
 
 # FastAPI 依賴：沒帶有效 token 就回 401，擋住非管理員請求
 def require_admin(
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> str:
     if credentials is None or not verify_admin_token(credentials.credentials):
         raise HTTPException(

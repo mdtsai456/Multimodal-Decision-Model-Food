@@ -8,6 +8,7 @@ import shutil                    # 複製原圖到 result1/result2
 from collections import Counter  # 統計最常見的餐別
 from datetime import datetime    # 產生「日期_時間」資料夾名
 from pathlib import Path         # 路徑處理
+from typing import Optional
 
 # --- 影像處理（畫外框、標籤）---
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -19,7 +20,7 @@ from .bbox_adjust import BBOX_SHIFT_VERSION, denudge_top_bboxes
 SESSION_DIR_RE = re.compile(r"^(\d{8})_(\d{6})(?:_(\d+))?$")
 
 
-def parse_session_name(name: str) -> tuple[str, str] | None:
+def parse_session_name(name: str) -> Optional[tuple[str, str]]:
     """回傳 (YYYYMMDD, HHMMSS)；不合命名規則則 None。"""
     m = SESSION_DIR_RE.match(name)  # 用正則對資料夾名
     if not m:
@@ -27,7 +28,7 @@ def parse_session_name(name: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)  # 日期八碼、時間六碼
 
 
-def _read_result_json(path: Path) -> dict | None:
+def _read_result_json(path: Path) -> Optional[dict]:
     """讀取 result.json；失敗或不存在回 None。"""
     if not path.is_file():
         return None
@@ -95,7 +96,7 @@ def recover_bboxes_from_boxed(
     original_path: Path,
     boxed_path: Path,
     dish_count: int,
-) -> list[list[float] | None]:
+) -> list[Optional[list[float]]]:
     """
     舊紀錄沒存 bbox 時，比對原圖與標註圖的色塊還原相對座標。
     回傳長度 = dish_count；失敗的位置為 None。
@@ -113,7 +114,7 @@ def recover_bboxes_from_boxed(
     op = orig.load()    # 原圖像素存取
     bp = boxed.load()   # 標註圖像素存取
     colors = colors_for_count(dish_count)  # 當初畫框用的顏色序列
-    boxes: list[list[float] | None] = []
+    boxes: list[Optional[list[float]]] = []
 
     # 每種顏色找「標註圖有、原圖沒有」的像素 → 就是框線／標籤區
     for color in colors:
@@ -246,7 +247,7 @@ def _normalize_stored_dish(d: dict) -> dict:
     }
 
 
-def load_record_detail(upload_root: Path, session_id: str) -> dict | None:
+def load_record_detail(upload_root: Path, session_id: str) -> Optional[dict]:
     """讀取單筆辨識紀錄詳情；找不到或路徑不合法回傳 None。"""
     # 擋掉奇怪的 id（避免路徑穿越）
     if not SESSION_DIR_RE.match(session_id):

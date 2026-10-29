@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """API 入口：菜單 CRUD、Excel 匯入、餐盤辨識。"""
 
 # --- 標準函式庫 ---
@@ -5,6 +7,7 @@ import json          # 處理 photo_files 的 JSON 字串 ↔ list
 import shutil        # 把上傳檔案寫到磁碟
 import uuid          # 產生不重複的暫存／上傳檔名
 from pathlib import Path  # 處理檔案路徑
+from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -64,7 +67,7 @@ FRONTEND_DIR = BASE_FOR_FRONT_DIR / "frontend"  # 前端 HTML/CSS/JS 目錄
 
 
 # 資料庫裡 photo_files 是 JSON 字串，轉成 list 給前端較好用
-def _photo_list(value: str | None) -> list[str] | None:
+def _photo_list(value: Optional[str]) -> Optional[list[str]]:
     if not value:
         return None
     try:
@@ -180,7 +183,7 @@ async def import_excel(
 @app.post("/api/predict", response_model=PredictResponse)  # POST；回傳格式固定為 PredictResponse
 async def predict_plate(
     file: UploadFile = File(...),   # 上傳的餐盤圖片（必填）
-    engine: str | None = Form(None),  # 這次改走 chat 或 jev；不送就用環境變數
+    engine: Optional[str] = Form(None),  # 這次改走 chat 或 jev；不送就用環境變數
     db: Session = Depends(get_db),  # 自動注入資料庫連線
 ):
     try:
@@ -236,8 +239,8 @@ async def predict_plate(
     # 組整份 API 回應
     return PredictResponse(
         predictions=api_items,              # 菜名、信心、bbox、次佳等
-        model=result["model"],              # 實際使用的模型名稱
-        raw=result.get("raw"),              # 模型原始文字（除錯用）
+        model=result["model"],             # 實際使用的模型名稱
+        raw=result.get("raw"),             # 模型原始文字（除錯用）
         result_dir=session_dir.name,        # 存檔資料夾名，例如 20260716_125930
         close_confidence_delta=CLOSE_CONFIDENCE_DELTA,  # 雙結果信心差門檻
     )

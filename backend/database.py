@@ -11,7 +11,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 # 專案根目錄（backend 的上一層， /）
-BASE_DIR = Path(__file__).resolve().parents[2]
+BASE_DIR = Path(__file__).resolve().parents[1]
 BASE_FOR_FRONT_DIR = Path(__file__).resolve().parent.parent  # 前端 HTML/CSS/JS 目錄
 
 # 載入根目錄的 .env（API Key、管理員密碼等）

@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 """讀取 Excel 並寫入資料庫（預設只追加、不覆蓋舊資料）。"""
 import json
 from pathlib import Path
+from typing import Optional
 
 import openpyxl
 from sqlalchemy.orm import Session
@@ -9,7 +12,7 @@ from .models import Dish
 
 
 # 清理「組成」欄位：遇到「以下數值…」這類說明就截斷，只留真正食材文字
-def _clean_composition(value) -> str | None:
+def _clean_composition(value) -> Optional[str]:
     if value is None:
         return None
     lines = []

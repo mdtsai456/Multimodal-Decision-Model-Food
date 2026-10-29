@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """餐盤圖片辨識：把菜單餵給 Zeabur AI Hub，回傳菜名與信心分數。"""
 
 # --- 標準函式庫 ---
@@ -9,7 +11,7 @@ import os          # 讀取 .env 裡的環境變數
 import re          # 從模型文字中抽出 ```json ... ``` 區塊
 from enum import Enum
 from pathlib import Path
-from typing import assert_never
+from typing import Optional
 
 # --- AI 客戶端（連 Zeabur AI Hub，目前用 OpenAI 格式呼叫 GPT）---
 import httpx
@@ -54,7 +56,7 @@ class InferenceEngine(str, Enum):
     JEV = "jev"
 
 
-def resolve_engine(override: str | None) -> InferenceEngine:
+def resolve_engine(override: Optional[str]) -> InferenceEngine:
     """表單有指定就用表單，否則用環境變數；空白視為 chat。"""
     raw = override if override is not None else os.getenv("INFERENCE_ENGINE", "")
     text = (raw or "").strip().lower()
@@ -75,7 +77,7 @@ def _guess_media_type(path: Path) -> str:
 
 
 # 過長敘述截斷，避免整份 prompt 太大、太貴、太慢
-def _clip(text: str | None, max_len: int = 420) -> str:
+def _clip(text: Optional[str], max_len: int = 420) -> str:
     if not text:
         return ""
     cleaned = " ".join(str(text).split())  # 壓成單行空白
@@ -218,7 +220,7 @@ def _ask_model(prompt: str, media_type: str, image_b64: str) -> str:
 
 
 # 把模型回的一道預測，對回資料庫裡真正的 Dish
-def _match_dish(item: dict, dishes: list[Dish]) -> Dish | None:
+def _match_dish(item: dict, dishes: list[Dish]) -> Optional[Dish]:
     by_id = {d.id: d for d in dishes}
     by_name = {d.name: d for d in dishes}
     dish_id = item.get("dish_id")
@@ -239,7 +241,7 @@ def _match_dish(item: dict, dishes: list[Dish]) -> Dish | None:
 
 # 把模型回的 bbox 正規化成 [x,y,w,h]（0～1）；不合理就回 None
 # 新格式優先：[x1,y1,x2,y2]；若不像角點則退回舊格式 [x,y,w,h]
-def _normalize_bbox(raw) -> list[float] | None:
+def _normalize_bbox(raw) -> Optional[list[float]]:
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
         return None
     try:
@@ -270,21 +272,7 @@ def _normalize_bbox(raw) -> list[float] | None:
     return [round(x1, 4), round(y1, 4), round(w, 4), round(h, 4)] # 統一輸出：一律變成 [x, y, w, h]（相對座標 0～1）
 
 
-def _ensure_upright_image(path: Path) -> None:
-    """依 EXIF 轉正並覆寫檔案，讓模型看圖與畫框用同一像素方向。"""
-    with Image.open(path) as img:
-        oriented = ImageOps.exif_transpose(img) # 打開圖片後，依 EXIF 的旋轉／鏡像標記，把像素真正轉正。
-        # 轉成 RGB 存回，去掉方向標記造成的錯位
-        rgb = oriented.convert("RGB")
-        # 轉成一般 RGB
-        suffix = path.suffix.lower()
-        if suffix in {".png", ".webp", ".gif"}:
-            rgb.save(path)
-        else:
-            rgb.save(path, format="JPEG", quality=92)
-
-
-def _prediction_core(dish: Dish, item: dict, bbox: list[float] | None) -> dict:
+def _prediction_core(dish: Dish, item: dict, bbox: Optional[list[float]]) -> dict:
     conf = max(0.0, min(1.0, float(item.get("confidence", 0))))
     return {
         "name": dish.name,
@@ -301,8 +289,8 @@ def _extract_second_best(
     dishes: list[Dish],
     primary_name: str,
     primary_id: int,
-    bbox: list[float] | None,
-) -> dict | None:
+    bbox: Optional[list[float]],
+) -> Optional[dict]:
     """取出模型給的次佳候選（不依信心差過濾；給 console / second_best 用）。"""
     if not isinstance(raw_alt, dict):
         print(f"[debug] {primary_name}: 模型未給 alternative → 無次佳")
@@ -327,8 +315,8 @@ def _extract_second_best(
 def _maybe_adopt_alternative(
     primary_name: str,
     primary_conf: float,
-    second: dict | None,
-) -> dict | None:
+    second: Optional[dict],
+) -> Optional[dict]:
     """信心相近才採用為 alternative（影響前端雙條與 result1/result2）。"""
     if not second:
         return None
@@ -343,7 +331,7 @@ def _maybe_adopt_alternative(
     return second
 
 
-def _bbox_iou(a: list[float] | None, b: list[float] | None) -> float:
+def _bbox_iou(a: Optional[list[float]], b: Optional[list[float]]) -> float:
     """
     算兩個框重疊多少（IoU = 交集面積 / 聯集面積），回傳 0～1。
     愈接近 1 表示兩個框幾乎同一位置；用來判斷要不要合併成雙結果。
@@ -510,7 +498,7 @@ def _jev_questions(dishes: list[Dish]) -> dict:
     return questions
 
 
-def _bbox_from_jev_edges(edges) -> list[float] | None:
+def _bbox_from_jev_edges(edges) -> Optional[list[float]]:
     """Jev 的四邊轉成現有檢查函式吃的角點，再得到 [x, y, w, h]。"""
     if not isinstance(edges, dict):
         return None
@@ -752,3 +740,17 @@ def recognize_dishes(
     if engine is InferenceEngine.JEV:
         return recognize_dishes_jev(image_path, dishes)
     assert_never(engine)
+
+
+def _ensure_upright_image(path: Path) -> None:
+    """依 EXIF 轉正並覆寫檔案，讓模型看圖與畫框用同一像素方向。"""
+    with Image.open(path) as img:
+        oriented = ImageOps.exif_transpose(img) # 打開圖片後，依 EXIF 的旋轉／鏡像標記，把像素真正轉正。
+        # 轉成 RGB 存回，去掉方向標記造成的錯位
+        rgb = oriented.convert("RGB")
+        # 轉成一般 RGB
+        suffix = path.suffix.lower()
+        if suffix in {".png", ".webp", ".gif"}:
+            rgb.save(path)
+        else:
+            rgb.save(path, format="JPEG", quality=92)
