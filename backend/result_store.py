@@ -1,5 +1,6 @@
 """辨識結果存檔。每個資料夾包含原圖、標註圖與 JSON。"""
 from __future__ import annotations
+from typing import Optional
 
 import json
 import re
@@ -16,7 +17,7 @@ from .bbox_adjust import BBOX_SHIFT_VERSION, denudge_top_bboxes
 SESSION_DIR_RE = re.compile(r"^(\d{8})_(\d{6})(?:_(\d+))?$")
 
 
-def parse_session_name(name: str) -> tuple[str, str] | None:
+def parse_session_name(name: str) -> Optional[tuple[str, str]]:
     """名稱符合規則時回傳 (YYYYMMDD, HHMMSS)。否則回傳 None。"""
     m = SESSION_DIR_RE.match(name)
     if not m:
@@ -24,7 +25,7 @@ def parse_session_name(name: str) -> tuple[str, str] | None:
     return m.group(1), m.group(2)
 
 
-def _read_result_json(path: Path) -> dict | None:
+def _read_result_json(path: Path) -> Optional[dict]:
     """讀取 result.json。檔案不存在、無法讀取，或根節點不是物件時回傳 None。"""
     if not path.is_file():
         return None
@@ -85,7 +86,7 @@ def recover_bboxes_from_boxed(
     original_path: Path,
     boxed_path: Path,
     dish_count: int,
-) -> list[list[float] | None]:
+) -> list[Optional[list[float]]]:
     """舊紀錄沒有 bbox 時，比對原圖與標註圖的色塊，還原相對座標。回傳長度等於 dish_count。失敗的位置是 None。"""
     if dish_count <= 0 or not original_path.is_file() or not boxed_path.is_file():
         return []
@@ -98,7 +99,7 @@ def recover_bboxes_from_boxed(
     op = orig.load()
     bp = boxed.load()
     colors = colors_for_count(dish_count)
-    boxes: list[list[float] | None] = []
+    boxes: list[Optional[list[float]]] = []
 
     for color in colors:
         xs: list[int] = []
@@ -219,7 +220,7 @@ def _normalize_stored_dish(d: dict) -> dict:
     }
 
 
-def load_record_detail(upload_root: Path, session_id: str) -> dict | None:
+def load_record_detail(upload_root: Path, session_id: str) -> Optional[dict]:
     """讀取一筆辨識紀錄。找不到或路徑不合法時回傳 None。"""
     if not SESSION_DIR_RE.match(session_id):
         return None

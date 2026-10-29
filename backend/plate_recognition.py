@@ -1,5 +1,6 @@
 """將辨識結果轉成食物攝影機使用的 JSON。"""
 
+from typing import Optional
 from .schemas import (
     PlateRecognitionAlternative,
     PlateRecognitionItem,
@@ -7,13 +8,13 @@ from .schemas import (
 )
 
 
-def _source_food_code(value: object) -> str | None:
+def _source_food_code(value: object) -> Optional[str]:
     if value is None or value == "":
         return None
     return str(value)
 
 
-def _alternative(raw: dict | None) -> PlateRecognitionAlternative | None:
+def _alternative(raw: Optional[dict]) -> Optional[PlateRecognitionAlternative]:
     if not raw or not raw.get("name"):
         return None
     return PlateRecognitionAlternative(
@@ -23,7 +24,7 @@ def _alternative(raw: dict | None) -> PlateRecognitionAlternative | None:
     )
 
 
-def plate_recognition_body(result: dict, result_dir: str | None) -> dict:
+def plate_recognition_body(result: dict, result_dir: Optional[str]) -> dict:
     """辨識成功。grams 為 null。此流程不計算重量。"""
     items = [
         PlateRecognitionItem(

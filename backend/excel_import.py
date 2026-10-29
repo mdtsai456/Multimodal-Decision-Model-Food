@@ -1,4 +1,5 @@
 """讀取 Excel 並寫入資料庫。預設只新增。不覆寫既有菜色。"""
+from typing import Optional
 import json
 from pathlib import Path
 
@@ -8,7 +9,7 @@ from sqlalchemy.orm import Session
 from .models import Dish
 
 
-def _clean_composition(value) -> str | None:
+def _clean_composition(value) -> Optional[str]:
     """組成文字遇到「以下數值」時，捨棄該行與其後的內容。"""
     if value is None:
         return None

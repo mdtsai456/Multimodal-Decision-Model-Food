@@ -5,8 +5,8 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-# parents[2] 是 Jenny。menu.db 放在此目錄的 data 資料夾。
-BASE_DIR = Path(__file__).resolve().parents[2]
+# 設定與資料存放在專案根目錄。
+BASE_DIR = Path(__file__).resolve().parents[1]
 # 前端檔案在 health_web。
 BASE_FOR_FRONT_DIR = Path(__file__).resolve().parent.parent
 

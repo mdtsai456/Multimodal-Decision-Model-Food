@@ -1,5 +1,6 @@
 """餐盤圖片辨識。依菜單回傳菜名與信心分數。"""
 
+from typing import Optional
 import base64
 import io
 import json
@@ -8,7 +9,7 @@ import os
 import re
 from enum import Enum
 from pathlib import Path
-from typing import assert_never
+from typing_extensions import assert_never
 
 import httpx
 from openai import OpenAI
@@ -49,7 +50,7 @@ class InferenceEngine(str, Enum):
     JEV = "jev"
 
 
-def resolve_engine(override: str | None) -> InferenceEngine:
+def resolve_engine(override: Optional[str]) -> InferenceEngine:
     """表單有值時使用表單。否則使用 INFERENCE_ENGINE。空白為 chat。"""
     raw = override if override is not None else os.getenv("INFERENCE_ENGINE", "")
     text = (raw or "").strip().lower()
@@ -69,7 +70,7 @@ def _guess_media_type(path: Path) -> str:
     return "image/jpeg"
 
 
-def _clip(text: str | None, max_len: int = 420) -> str:
+def _clip(text: Optional[str], max_len: int = 420) -> str:
     """將文字收成一行。長度超過 max_len 時截斷。"""
     if not text:
         return ""
@@ -207,7 +208,7 @@ def _ask_model(prompt: str, media_type: str, image_b64: str) -> str:
     return (choice.message.content or "").strip()
 
 
-def _match_dish(item: dict, dishes: list[Dish]) -> Dish | None:
+def _match_dish(item: dict, dishes: list[Dish]) -> Optional[Dish]:
     """將一筆預測對到菜單。順序是 id、完整菜名、名稱包含。"""
     by_id = {d.id: d for d in dishes}
     by_name = {d.name: d for d in dishes}
@@ -224,7 +225,7 @@ def _match_dish(item: dict, dishes: list[Dish]) -> Dish | None:
     return None
 
 
-def _normalize_bbox(raw) -> list[float] | None:
+def _normalize_bbox(raw) -> Optional[list[float]]:
     """將 bbox 轉成 [x, y, w, h]。範圍是 0 到 1。無效時回傳 None。
     優先接受 [x1, y1, x2, y2]。不符合角點時，改以 [x, y, w, h] 解讀。
     """
@@ -267,7 +268,7 @@ def _ensure_upright_image(path: Path) -> None:
             rgb.save(path, format="JPEG", quality=92)
 
 
-def _prediction_core(dish: Dish, item: dict, bbox: list[float] | None) -> dict:
+def _prediction_core(dish: Dish, item: dict, bbox: Optional[list[float]]) -> dict:
     conf = max(0.0, min(1.0, float(item.get("confidence", 0))))
     return {
         "name": dish.name,
@@ -284,8 +285,8 @@ def _extract_second_best(
     dishes: list[Dish],
     primary_name: str,
     primary_id: int,
-    bbox: list[float] | None,
-) -> dict | None:
+    bbox: Optional[list[float]],
+) -> Optional[dict]:
     """讀取模型的次佳候選。不檢查信心差。結果寫入 second_best。"""
     if not isinstance(raw_alt, dict):
         print(f"[debug] {primary_name}: 模型未給 alternative → 無次佳")
@@ -303,8 +304,8 @@ def _extract_second_best(
 def _maybe_adopt_alternative(
     primary_name: str,
     primary_conf: float,
-    second: dict | None,
-) -> dict | None:
+    second: Optional[dict],
+) -> Optional[dict]:
     """信心差小於或等於 CLOSE_CONFIDENCE_DELTA 時，回傳 alternative。"""
     if not second:
         return None
@@ -319,7 +320,7 @@ def _maybe_adopt_alternative(
     return second
 
 
-def _bbox_iou(a: list[float] | None, b: list[float] | None) -> float:
+def _bbox_iou(a: Optional[list[float]], b: Optional[list[float]]) -> float:
     """計算 IoU。IoU 是交集面積除以聯集面積。範圍是 0 到 1。框格式是 [x, y, w, h]。"""
     if not a or not b or len(a) != 4 or len(b) != 4:
         return 0.0
@@ -459,7 +460,7 @@ def _jev_questions(dishes: list[Dish]) -> dict:
     return questions
 
 
-def _bbox_from_jev_edges(edges) -> list[float] | None:
+def _bbox_from_jev_edges(edges) -> Optional[list[float]]:
     """將 Jev 的 left、top、right、bottom 轉成 [x, y, w, h]。"""
     if not isinstance(edges, dict):
         return None

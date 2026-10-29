@@ -1,5 +1,6 @@
 """API 入口。包含菜單、Excel 匯入與餐盤辨識。"""
 
+from typing import Optional
 import json
 import shutil
 import uuid
@@ -52,7 +53,7 @@ app.add_middleware(
 FRONTEND_DIR = BASE_FOR_FRONT_DIR / "frontend"
 
 
-def _photo_list(value: str | None) -> list[str] | None:
+def _photo_list(value: Optional[str]) -> Optional[list[str]]:
     """將 photo_files 的 JSON 字串轉成 list。"""
     if not value:
         return None
@@ -151,7 +152,7 @@ def import_excel(
     return {"ok": True, **result}
 
 
-def _resolve_request_engine(engine: str | None):
+def _resolve_request_engine(engine: Optional[str]):
     try:
         return resolve_engine(engine)
     except ValueError as exc:
@@ -179,7 +180,7 @@ def _recognize_upload(saved_path: Path, dishes: list[Dish], resolved):
         raise
 
 
-def _begin_recognition(file: UploadFile, engine: str | None, db: Session):
+def _begin_recognition(file: UploadFile, engine: Optional[str], db: Session):
     resolved = _resolve_request_engine(engine)
     _require_image(file)
     saved_path = _write_upload(file)
@@ -199,7 +200,7 @@ def _save_bundle(saved_path: Path, dishes: list[Dish], result: dict) -> Path:
 @app.post("/api/predict", response_model=PredictResponse)
 def predict_plate(
     file: UploadFile = File(...),
-    engine: str | None = Form(None),
+    engine: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     resolved, saved_path, dishes = _begin_recognition(file, engine, db)
@@ -225,7 +226,7 @@ def predict_plate(
 )
 def recognize_plate_for_camera(
     file: UploadFile = File(...),
-    engine: str | None = Form(None),
+    engine: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     resolved, saved_path, dishes = _begin_recognition(file, engine, db)

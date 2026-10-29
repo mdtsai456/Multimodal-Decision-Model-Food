@@ -1,4 +1,5 @@
 """管理員密碼與 token 簽章。"""
+from typing import Optional
 import hashlib
 import hmac
 import os
@@ -51,7 +52,7 @@ def check_admin_password(password: str) -> bool:
 
 
 def require_admin(
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security),
 ) -> str:
     """沒有有效 token 時回 401。"""
     if credentials is None or not verify_admin_token(credentials.credentials):
