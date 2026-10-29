@@ -1,6 +1,5 @@
-// 管理頁：登入、菜單管理、辨識紀錄管理
+// 管理頁。包含登入、菜單與辨識紀錄。
 
-// --- DOM 元素 ---
 const TOKEN_KEY = "healthweb_admin_token";
 const toastEl = document.getElementById("toast");
 const loginPanel = document.getElementById("login-panel");
@@ -19,9 +18,9 @@ const recordsEmpty = document.getElementById("records-empty");
 const tabMenu = document.getElementById("tab-menu");
 const tabRecords = document.getElementById("tab-records");
 
-let expandedRecordId = null; // 目前展開中的紀錄 id（同一時間只開一筆）
+let expandedRecordId = null;
 
-// 畫面底部短暫提示
+// 在畫面底部顯示訊息 2.8 秒。
 function showToast(message) {
   toastEl.textContent = message;
   toastEl.classList.remove("hidden");
@@ -29,18 +28,18 @@ function showToast(message) {
   showToast._t = setTimeout(() => toastEl.classList.add("hidden"), 2800);
 }
 
-// 從 localStorage 讀管理員 token
+// 從 localStorage 讀取管理員 token。
 function getToken() {
   return localStorage.getItem(TOKEN_KEY) || "";
 }
 
-// 登入寫入／登出清除 token
+// 登入時寫入 token。登出時刪除 token。
 function setToken(token) {
   if (token) localStorage.setItem(TOKEN_KEY, token);
   else localStorage.removeItem(TOKEN_KEY);
 }
 
-// 組出帶 Authorization: Bearer 的 headers（管理 API 用）
+// 管理 API 的請求標頭。有 token 時加入 Authorization: Bearer。
 function authHeaders(extra = {}) {
   const token = getToken();
   return {
@@ -49,13 +48,13 @@ function authHeaders(extra = {}) {
   };
 }
 
-// 切換登入畫面 ↔ 管理主畫面
+// 已登入時顯示管理頁。未登入時顯示登入頁。
 function showAdmin(isLoggedIn) {
   loginPanel.classList.toggle("hidden", isLoggedIn);
   adminPanel.classList.toggle("hidden", !isLoggedIn);
 }
 
-// 避免表格／卡片內容被當成 HTML 注入
+// 將文字中的 HTML 特殊字元轉成實體。
 function escapeHtml(text) {
   return String(text ?? "")
     .replaceAll("&", "&amp;")
@@ -64,7 +63,7 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
-// 統一 fetch：失敗拋錯；401 則清 token 並退回登入
+// 呼叫 API。失敗時丟出錯誤。401 時刪除 token 並顯示登入頁。
 async function api(url, options = {}) {
   const res = await fetch(url, options);
   let data = null;
@@ -84,7 +83,7 @@ async function api(url, options = {}) {
   return data;
 }
 
-// 今天的 YYYY-MM-DD（給日期選擇器預設值）
+// 回傳今天的日期。格式是 YYYY-MM-DD。
 function todayIso() {
   const d = new Date();
   const y = d.getFullYear();
@@ -93,14 +92,14 @@ function todayIso() {
   return `${y}-${m}-${day}`;
 }
 
-// 主候選外框／卡片色（色環均分）
+// 依菜色數量均分色相。每道菜使用不同顏色。
 function colorForIndex(index, total) {
   const n = Math.max(total, 1);
   const hue = Math.round((index * 360) / n) % 360;
   return `hsl(${hue}, 58%, 40%)`;
 }
 
-// 次佳候選略偏色相，與左側區隔
+// 次佳使用偏移 28 度的色相。
 function altColorForIndex(index, total) {
   const n = Math.max(total, 1);
   const hue = Math.round((index * 360) / n + 28) % 360;
@@ -111,7 +110,6 @@ function pct(confidence) {
   return `${Math.round(Number(confidence) * 100)}%`;
 }
 
-// --- 分頁切換 ---
 function switchTab(tab) {
   const isMenu = tab === "menu";
   tabMenu.classList.toggle("hidden", !isMenu);
@@ -130,7 +128,6 @@ document.querySelectorAll(".admin-tab").forEach((btn) => {
   btn.addEventListener("click", () => switchTab(btn.dataset.tab));
 });
 
-// --- 登入 ---
 loginForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   const password = document.getElementById("admin-password").value;
@@ -156,7 +153,7 @@ logoutBtn.addEventListener("click", () => {
   showToast("已登出");
 });
 
-// 向後端拉全部菜色，填入表格列
+// 從後端讀取全部菜色，並填入表格。
 async function loadDishes() {
   const dishes = await api("/api/dishes");
   dishTbody.innerHTML = dishes
@@ -179,7 +176,7 @@ async function loadDishes() {
     .join("");
 }
 
-// 事件委派：點編輯 → 開對話框；點刪除 → 確認後 DELETE
+// 點「編輯」時開啟對話框。點「刪除」時確認後送出 DELETE。
 dishTbody.addEventListener("click", async (e) => {
   const editId = e.target.getAttribute("data-edit");
   const delId = e.target.getAttribute("data-del");
@@ -208,7 +205,7 @@ function field(id) {
   return document.getElementById(id);
 }
 
-// 把既有菜色欄位填進編輯對話框
+// 將既有菜色填入編輯對話框。
 function openDialog(dish) {
   dialogTitle.textContent = "編輯菜色";
   field("dish-id").value = dish.id;
@@ -230,7 +227,7 @@ function openDialog(dish) {
   dialog.showModal();
 }
 
-// 從對話框收集要 PUT 的欄位（空字串多半轉 null）
+// 從對話框收集 PUT 欄位。空字串改為 null。
 function collectForm() {
   const codeVal = field("f-dish_code").value;
   return {
@@ -276,7 +273,7 @@ dishForm.addEventListener("submit", async (e) => {
   }
 });
 
-// 選 Excel 後上傳：只追加新菜，重複略過
+// 上傳 Excel。只新增菜色。重複的菜色略過。
 excelInput.addEventListener("change", async () => {
   const file = excelInput.files?.[0];
   if (!file) return;
@@ -298,11 +295,10 @@ excelInput.addEventListener("change", async () => {
   } catch (err) {
     showToast(err.message);
   } finally {
-    excelInput.value = ""; // 清空，方便同一檔再選一次
+    excelInput.value = "";
   }
 });
 
-// --- 記錄管理：列表／展開詳情／標註圖 ---
 function renderHalf(item, color) {
   const code = item.dish_id ? `編號 ${escapeHtml(item.dish_id)}` : "—";
   const reason = item.reason ? ` · ${escapeHtml(item.reason)}` : "";
@@ -318,14 +314,14 @@ function renderHalf(item, color) {
   `;
 }
 
-// 是否至少有一道菜有可用 bbox（決定能否用 canvas 重畫）
+// 至少一道菜有 4 個數字的 bbox 時回傳 true。
 function dishesHaveBbox(dishes) {
   return (dishes || []).some(
     (d) => Array.isArray(d.bbox) && d.bbox.length === 4
   );
 }
 
-/** 與辨識頁相同：在 canvas 依顯示尺寸重畫外框與繁中菜名（單一菜名，不合併） */
+/** 在 canvas 依顯示尺寸畫外框與菜名。每格只畫一個菜名。 */
 function paintRecordCanvas(canvas, originalUrl, dishes) {
   const img = new Image();
   img.onload = () => {
@@ -366,14 +362,7 @@ function paintRecordCanvas(canvas, originalUrl, dishes) {
       const tw = ctx.measureText(label).width;
       const th = Math.max(16, Math.round(w / 36));
 
-      // --- 原本：標籤貼在外框左上角上方 ---
-      // const ly = Math.max(0, py - th - 4);
-      // ctx.fillStyle = color;
-      // ctx.fillRect(px, ly, tw + pad * 2, th + 4);
-      // ctx.fillStyle = "#fff";
-      // ctx.fillText(label, px + pad, ly + th - 2);
-
-      // --- 現在：標籤在 bbox 水平置中、垂直中間偏上 ---
+      // 標籤位於 bbox 的水平中心。垂直位置在中線上方。
       const labelW = tw + pad * 2;
       const labelH = th + 4;
       const lx = px + (pw - labelW) / 2;
@@ -389,7 +378,7 @@ function paintRecordCanvas(canvas, originalUrl, dishes) {
   img.src = originalUrl;
 }
 
-// 管理頁 canvas：主候選菜名 + bbox
+// 主候選菜名與 bbox。
 function toAdminResult1(dishes) {
   return (dishes || []).map((d) => ({
     dish_name: d.dish_name,
@@ -397,31 +386,23 @@ function toAdminResult1(dishes) {
   }));
 }
 
-// 管理頁 canvas：有次佳則改用次佳菜名（bbox 共用）
+// 有次佳時使用次佳菜名。bbox 與主候選相同。
 function toAdminResult2(dishes) {
   return (dishes || []).map((d) => {
     const alt = d.alternative;
-    if (alt && alt.dish_name) {
-      return { dish_name: alt.dish_name, bbox: d.bbox };
-    }
-    return { dish_name: d.dish_name, bbox: d.bbox };
+    const src = alt && alt.dish_name ? alt : d;
+    return { dish_name: src.dish_name, bbox: d.bbox };
   });
 }
 
-// 組出展開區 HTML：優先 canvas（無外框、標籤中間偏上）；缺資料才退回預存標註圖
+// 有原圖與 bbox 時使用 canvas。否則使用已儲存的標註圖。
 function renderRecordDetail(detail) {
   const dishes = detail.dishes || [];
-  const bust = Date.now(); // 避免瀏覽器快取舊標註圖
+  const bust = Date.now();
   const hasDual = Boolean(detail.has_dual);
   const canCanvas = Boolean(detail.original_url) && dishesHaveBbox(dishes);
-  // 雙結果且能用 canvas → 兩張 canvas；否則若有預存圖再退回 img
   const useDualCanvas = canCanvas && hasDual;
   const useSingleCanvas = canCanvas && !hasDual;
-
-  // --- 原本：雙結果直接用預存 result1/result2 標註圖（含外框）---
-  // const useDualImgs = hasDual && detail.boxed1_url && detail.boxed2_url;
-  // const canCanvasOld =
-  //   !useDualImgs && Boolean(detail.original_url) && dishesHaveBbox(dishes);
 
   let imageHtml = "";
 
@@ -443,7 +424,6 @@ function renderRecordDetail(detail) {
         <canvas class="result-canvas record-result-canvas" aria-label="辨識結果標註圖"></canvas>
       </div>`;
   } else if (hasDual && detail.boxed1_url && detail.boxed2_url) {
-    // 退回：無法 canvas 時仍用預存雙結果圖
     imageHtml = `
       <div class="result-boxed-pair">
         <figure class="result-boxed-fig">
@@ -456,7 +436,6 @@ function renderRecordDetail(detail) {
         </figure>
       </div>`;
   } else {
-    // 退回：單張預存標註圖
     imageHtml = `
       <div class="result-image-wrap">
         <img class="result-boxed-img record-boxed-single" src="${escapeHtml(detail.boxed_url)}?t=${bust}" alt="辨識標註圖" />
@@ -515,7 +494,7 @@ function renderRecordDetail(detail) {
   };
 }
 
-// 依日期列出當日辨識紀錄摘要
+// 依日期列出當日辨識紀錄。
 async function loadRecords(date) {
   if (!date) {
     recordsList.innerHTML = "";
@@ -566,7 +545,7 @@ async function loadRecords(date) {
   }
 }
 
-// 點摘要列：展開／收合，並向 /api/admin/records/{id} 拉詳情
+// 點摘要列時展開或收合。展開時讀取 /api/admin/records/{id}。
 recordsList.addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-toggle]");
   if (!btn) return;
@@ -575,7 +554,6 @@ recordsList.addEventListener("click", async (e) => {
   const body = item?.querySelector(`[data-body="${id}"]`);
   if (!body) return;
 
-  // 再點同一筆 → 收合
   if (expandedRecordId === id) {
     body.classList.add("hidden");
     body.innerHTML = "";
@@ -584,7 +562,6 @@ recordsList.addEventListener("click", async (e) => {
     return;
   }
 
-  // 收合其他已展開項目
   recordsList.querySelectorAll(".record-item.is-open").forEach((el) => {
     el.classList.remove("is-open");
     const b = el.querySelector(".record-body");
@@ -629,7 +606,7 @@ recordDateInput.addEventListener("change", () => {
   loadRecords(recordDateInput.value);
 });
 
-// 進頁：預設今天日期；有 token 就試著載入菜單（失效則退回登入）
+// 頁面載入時，日期預設為今天。有 token 時載入菜單。token 無效時顯示登入頁。
 async function boot() {
   if (!recordDateInput.value) {
     recordDateInput.value = todayIso();

@@ -1,19 +1,16 @@
-from __future__ import annotations
+"""餐盤圖片辨識。依菜單回傳菜名與信心分數。"""
 
-"""餐盤圖片辨識：把菜單餵給 Zeabur AI Hub，回傳菜名與信心分數。"""
-
-# --- 標準函式庫 ---
-import base64      # 圖片轉成 base64，才能塞進 API 請求
-import io          # 把縮放後的 JPEG 留在記憶體
-import json        # 解析模型回傳的 JSON
-import mimetypes   # 依副檔名判斷 image/jpeg、image/png 等
-import os          # 讀取 .env 裡的環境變數
-import re          # 從模型文字中抽出 ```json ... ``` 區塊
+from typing import Optional
+import base64
+import io
+import json
+import mimetypes
+import os
+import re
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing_extensions import assert_never
 
-# --- AI 客戶端（連 Zeabur AI Hub，目前用 OpenAI 格式呼叫 GPT）---
 import httpx
 from openai import OpenAI
 from PIL import Image, ImageOps
@@ -21,16 +18,14 @@ from PIL import Image, ImageOps
 from .bbox_adjust import (
     BBOX_BOTTOM_Y_SHIFT,
     BBOX_TOP_Y_SHIFT,
-    BBOX_Y_SHIFT,
     nudge_bboxes as _nudge_bboxes,
 )
 from .models import Dish
 
-# 從環境變數讀設定（見專案根目錄 .env）
 API_KEY = os.getenv("ZEABUR_AI_HUB_API_KEY", "")
 BASE_URL = os.getenv("ZEABUR_AI_HUB_BASE_URL", "https://hnd1.aihub.zeabur.ai/")
 MODEL = os.getenv("AI_MODEL", "gpt-5.6-luna")
-# 兩道候選信心差 ≤ 此值時視為「相近」，前端拆成雙條、後端存 result1/result2
+# 兩道菜的信心差小於或等於此次值時，前端顯示兩筆。系統寫入 result1 與 result2。
 CLOSE_CONFIDENCE_DELTA = float(os.getenv("CLOSE_CONFIDENCE_DELTA", "0.30"))
 JEV_MODEL = os.getenv("JEV_MODEL", "typesafe/jev-1.14")
 JEV_DECISIONS_URL = os.getenv(
@@ -38,26 +33,25 @@ JEV_DECISIONS_URL = os.getenv(
 )
 NOUL_PRESENT_MIN = float(os.getenv("NOUL_PRESENT_MIN", "0.50"))
 INFERENCE_ENGINE = os.getenv("INFERENCE_ENGINE", "chat")
-# 兩框重疊到這個程度，Jev 視為同一格食物
+# IoU 大於或等於此次值時，兩框視為同一格食物。
 JEV_SAME_CELL_IOU = 0.45
 print(
     f"[config] INFERENCE_ENGINE={INFERENCE_ENGINE} AI_MODEL={MODEL} "
     f"JEV_MODEL={JEV_MODEL} NOUL_PRESENT_MIN={NOUL_PRESENT_MIN} "
     f"CLOSE_CONFIDENCE_DELTA={CLOSE_CONFIDENCE_DELTA} "
-    f"BBOX_TOP_Y_SHIFT={BBOX_TOP_Y_SHIFT} BBOX_BOTTOM_Y_SHIFT={BBOX_BOTTOM_Y_SHIFT} "
-    f"(legacy BBOX_Y_SHIFT={BBOX_Y_SHIFT})"
+    f"BBOX_TOP_Y_SHIFT={BBOX_TOP_Y_SHIFT} BBOX_BOTTOM_Y_SHIFT={BBOX_BOTTOM_Y_SHIFT}"
 )
 
 
 class InferenceEngine(str, Enum):
-    """辨識走看圖對話，或走 Jev 決策。"""
+    """辨識引擎。CHAT 使用看圖對話。JEV 使用 Jev。"""
 
     CHAT = "chat"
     JEV = "jev"
 
 
 def resolve_engine(override: Optional[str]) -> InferenceEngine:
-    """表單有指定就用表單，否則用環境變數；空白視為 chat。"""
+    """表單有值時使用表單。否則使用 INFERENCE_ENGINE。空白為 chat。"""
     raw = override if override is not None else os.getenv("INFERENCE_ENGINE", "")
     text = (raw or "").strip().lower()
     if not text:
@@ -68,24 +62,24 @@ def resolve_engine(override: Optional[str]) -> InferenceEngine:
         raise ValueError("engine 只接受 chat 或 jev") from exc
 
 
-# 依檔名猜測圖片 MIME 類型；猜不到就當 jpeg
 def _guess_media_type(path: Path) -> str:
+    """由檔名取得 MIME。無法判斷時回傳 image/jpeg。"""
     mime, _ = mimetypes.guess_type(str(path))
     if mime in {"image/jpeg", "image/png", "image/gif", "image/webp"}:
         return mime
     return "image/jpeg"
 
 
-# 過長敘述截斷，避免整份 prompt 太大、太貴、太慢
 def _clip(text: Optional[str], max_len: int = 420) -> str:
+    """將文字收成一行。長度超過 max_len 時截斷。"""
     if not text:
         return ""
-    cleaned = " ".join(str(text).split())  # 壓成單行空白
+    cleaned = " ".join(str(text).split())
     return cleaned if len(cleaned) <= max_len else cleaned[: max_len - 1] + "…"
 
 
-# 把資料庫菜單編成文字清單，當成模型的「候選菜單」
 def _dish_catalog(dishes: list[Dish]) -> str:
+    """將菜單編成文字。此文字是模型的候選清單。"""
     blocks = []
     for d in dishes:
         parts = [
@@ -95,7 +89,6 @@ def _dish_catalog(dishes: list[Dish]) -> str:
             f"餐別={d.meal_type or ''}",
             f"組成={d.composition or ''}",
         ]
-        # 烹調方式／外觀特徵：辨識時最重要的參考文字
         cooking = _clip(d.cooking_method)
         if cooking:
             parts.append(f"AI烹調方式/外觀特徵={cooking}")
@@ -108,16 +101,14 @@ def _dish_catalog(dishes: list[Dish]) -> str:
     return "\n\n".join(blocks)
 
 
-# 模型回覆不一定是純 JSON，這裡盡量抽出可解析的 JSON
 def _extract_json(text: str) -> dict:
+    """從模型文字取出 JSON。先解析全文。失敗時解析程式碼區塊。再失敗時解析第一個 { 到最後一個 }。"""
     text = text.strip()
-    # 1) 直接就是 JSON
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
 
-    # 2) 包在 ```json ... ``` 程式碼區塊裡
     fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fenced:
         try:
@@ -125,15 +116,14 @@ def _extract_json(text: str) -> dict:
         except json.JSONDecodeError:
             pass
 
-    # 3) 退而求其次：找第一個 { 到最後一個 }
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end > start:
         return json.loads(text[start : end + 1])
     raise ValueError("模型回應無法解析為 JSON")
 
 
-# 組出給模型的完整指示（規則 + 候選菜單）
 def _build_prompt(catalog: str) -> str:
+    """組合模型指示與候選菜單。"""
     return f"""你是餐盤菜色辨識助手。請依「候選菜單」判斷這張餐盤照片中出現哪些菜色。
 
 規則：
@@ -186,8 +176,8 @@ bbox 說明（務必正確，常見錯誤會害下排框飄到上排）：
 """
 
 
-# 呼叫 Zeabur AI Hub（OpenAI 相容格式 + 看圖）
 def _ask_model(prompt: str, media_type: str, image_b64: str) -> str:
+    """以 OpenAI 相容格式送出文字與圖片。"""
     if not API_KEY:
         raise RuntimeError("ZEABUR_AI_HUB_API_KEY is required")
 
@@ -201,7 +191,6 @@ def _ask_model(prompt: str, media_type: str, image_b64: str) -> str:
                 "role": "user",
                 "content": [
                     {"type": "text", "text": prompt},
-                    # 圖片用 data URI 傳給支援 vision 的模型
                     {
                         "type": "image_url",
                         "image_url": {
@@ -219,44 +208,39 @@ def _ask_model(prompt: str, media_type: str, image_b64: str) -> str:
     return (choice.message.content or "").strip()
 
 
-# 把模型回的一道預測，對回資料庫裡真正的 Dish
 def _match_dish(item: dict, dishes: list[Dish]) -> Optional[Dish]:
+    """將一筆預測對到菜單。順序是 id、完整菜名、名稱包含。"""
     by_id = {d.id: d for d in dishes}
     by_name = {d.name: d for d in dishes}
     dish_id = item.get("dish_id")
     name = (item.get("name") or "").strip()
 
-    # 優先用 id（最準）
     if isinstance(dish_id, int) and dish_id in by_id:
         return by_id[dish_id]
-    # 再比對完整菜名
     if name in by_name:
         return by_name[name]
-    # 最後寬鬆比對（名稱互相包含）
     for d in dishes:
         if name and (name in d.name or d.name in name):
             return d
     return None
 
 
-# 把模型回的 bbox 正規化成 [x,y,w,h]（0～1）；不合理就回 None
-# 新格式優先：[x1,y1,x2,y2]；若不像角點則退回舊格式 [x,y,w,h]
 def _normalize_bbox(raw) -> Optional[list[float]]:
+    """將 bbox 轉成 [x, y, w, h]。範圍是 0 到 1。無效時回傳 None。
+    優先接受 [x1, y1, x2, y2]。不符合角點時，改以 [x, y, w, h] 解讀。
+    """
     if not isinstance(raw, (list, tuple)) or len(raw) != 4:
         return None
     try:
         a, b, c, d = [float(v) for v in raw]
     except (TypeError, ValueError):
         return None
-    # 若模型誤傳成像素很大，粗略當成已是相對座標失敗
     if max(a, b, c, d) > 1.5:
         return None
 
-    # x2>x1 且 y2>y1 → 視為角點格式
     if c > a and d > b:
         x1, y1, x2, y2 = a, b, c, d
     else:
-        # 舊格式 [x, y, w, h]
         x1, y1, x2, y2 = a, b, a + c, b + d
 
     x1 = max(0.0, min(1.0, x1))
@@ -267,9 +251,21 @@ def _normalize_bbox(raw) -> Optional[list[float]]:
         return None
     w = x2 - x1
     h = y2 - y1
-    if w < 0.02 or h < 0.02:  # 太小的框忽略
+    if w < 0.02 or h < 0.02:
         return None
-    return [round(x1, 4), round(y1, 4), round(w, 4), round(h, 4)] # 統一輸出：一律變成 [x, y, w, h]（相對座標 0～1）
+    return [round(x1, 4), round(y1, 4), round(w, 4), round(h, 4)]
+
+
+def _ensure_upright_image(path: Path) -> None:
+    """依 EXIF 轉正並覆寫檔案。模型與畫框使用同一像素方向。"""
+    with Image.open(path) as img:
+        oriented = ImageOps.exif_transpose(img)
+        rgb = oriented.convert("RGB")
+        suffix = path.suffix.lower()
+        if suffix in {".png", ".webp", ".gif"}:
+            rgb.save(path)
+        else:
+            rgb.save(path, format="JPEG", quality=92)
 
 
 def _prediction_core(dish: Dish, item: dict, bbox: Optional[list[float]]) -> dict:
@@ -291,7 +287,7 @@ def _extract_second_best(
     primary_id: int,
     bbox: Optional[list[float]],
 ) -> Optional[dict]:
-    """取出模型給的次佳候選（不依信心差過濾；給 console / second_best 用）。"""
+    """讀取模型的次佳候選。不檢查信心差。結果寫入 second_best。"""
     if not isinstance(raw_alt, dict):
         print(f"[debug] {primary_name}: 模型未給 alternative → 無次佳")
         return None
@@ -302,14 +298,7 @@ def _extract_second_best(
     if alt_dish.id == primary_id:
         print(f"[debug] {primary_name}: alternative 與主菜相同 → 無次佳")
         return None
-    alt = _prediction_core(alt_dish, raw_alt, bbox)
-    return {
-        "name": alt["name"],
-        "dish_id": alt["dish_id"],
-        "dish_code": alt["dish_code"],
-        "confidence": alt["confidence"],
-        "reason": alt["reason"],
-    }
+    return _second_view(_prediction_core(alt_dish, raw_alt, bbox))
 
 
 def _maybe_adopt_alternative(
@@ -317,7 +306,7 @@ def _maybe_adopt_alternative(
     primary_conf: float,
     second: Optional[dict],
 ) -> Optional[dict]:
-    """信心相近才採用為 alternative（影響前端雙條與 result1/result2）。"""
+    """信心差小於或等於 CLOSE_CONFIDENCE_DELTA 時，回傳 alternative。"""
     if not second:
         return None
     delta = abs(float(second["confidence"]) - primary_conf)
@@ -332,84 +321,58 @@ def _maybe_adopt_alternative(
 
 
 def _bbox_iou(a: Optional[list[float]], b: Optional[list[float]]) -> float:
-    """
-    算兩個框重疊多少（IoU = 交集面積 / 聯集面積），回傳 0～1。
-    愈接近 1 表示兩個框幾乎同一位置；用來判斷要不要合併成雙結果。
-    框格式皆為 [x, y, w, h]（相對座標 0～1）。
-    """
-    # 缺框或不是 4 個數字 → 當完全不重疊
+    """計算 IoU。IoU 是交集面積除以聯集面積。範圍是 0 到 1。框格式是 [x, y, w, h]。"""
     if not a or not b or len(a) != 4 or len(b) != 4:
         return 0.0
-    # 框 A：左上 (ax1,ay1)、右下 (ax2,ay2)
     ax1, ay1 = a[0], a[1]
     ax2, ay2 = a[0] + a[2], a[1] + a[3]
-    # 框 B：同上
     bx1, by1 = b[0], b[1]
     bx2, by2 = b[0] + b[2], b[1] + b[3]
-    # 交集矩形的左上／右下（取較內側的邊）
     ix1, iy1 = max(ax1, bx1), max(ay1, by1)
     ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-    # 交集寬高；沒重疊時會是負的 → 用 max 夾成 0
     iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
-    inter = iw * ih # 交集面積
+    inter = iw * ih
     if inter <= 0:
         return 0.0
-    # 聯集 = A面積 + B面積 - 交集（重疊區不要算兩次)
     union = a[2] * a[3] + b[2] * b[3] - inter
     return inter / union if union > 0 else 0.0
 
 
 def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
-    """
-    後備：若模型把相近兩道菜拆成兩筆且 bbox 重疊、信心相近，
-    合併為一筆主預測 + alternative。
-    (防止模型沒照做時結果還能合理顯示)
-    """
-    # 少於兩筆 → 不可能成對，原樣返回
+    """chat 路徑的合併。IoU 大於或等於 JEV_SAME_CELL_IOU，且信心差在門檻內時，合成一筆。"""
     if len(predictions) < 2:
         return predictions
 
-    used = set()  # 已被合併掉、不要再當主筆處理的索引
-    merged: list[dict] = []  # 合併後的結果列表
+    used = set()
+    merged: list[dict] = []
     for i, a in enumerate(predictions):
         if i in used:
-            continue  # 這筆已當過別人的次佳，跳過
-        pair_j = None  # 找到的配對索引；找不到維持 None
-        # 往後找能不能跟 a 配成「同一格的雙候選」
+            continue
+        pair_j = None
         for j in range(i + 1, len(predictions)):
             if j in used:
-                continue  # j 已被用過
+                continue
             b = predictions[j]
-            # 任一筆已有 alternative → 不重複合併
             if a.get("alternative") or b.get("alternative"):
                 continue
-            # 信心差太大 → 不像「難分勝負」的兩道
             if abs(a["confidence"] - b["confidence"]) > CLOSE_CONFIDENCE_DELTA:
                 continue
-            # 框重疊不夠（IoU < 0.45）→ 多半是不同格子，不要併
-            if _bbox_iou(a.get("bbox"), b.get("bbox")) < 0.45:
+            if _bbox_iou(a.get("bbox"), b.get("bbox")) < JEV_SAME_CELL_IOU:
                 continue
-            pair_j = j  # 找到合適的一對
+            pair_j = j
             break
 
         if pair_j is None:
-            merged.append(a)  # 沒配對 → a 單獨留下
+            merged.append(a)
             continue
 
         b = predictions[pair_j]
-        used.add(pair_j)  # 標記 b 已被併入，後面不要再處理
-        # 信心高的當主預測，低的當次佳
+        used.add(pair_j)
         primary, secondary = (a, b) if a["confidence"] >= b["confidence"] else (b, a)
-        primary = dict(primary)  # 複製一份，避免改到原 list 裡的物件
-        second = {
-            "name": secondary["name"],
-            "dish_id": secondary["dish_id"],
-            "dish_code": secondary["dish_code"],
-            "confidence": secondary["confidence"],
-            "reason": secondary.get("reason"),
-        }
-        primary["second_best"] = second   # debug 用
-        primary["alternative"] = second   # 正式採用雙結果（前端／存檔）
+        primary = dict(primary)
+        second = _second_view(secondary)
+        primary["second_best"] = second
+        primary["alternative"] = second
         print(
             f"[debug] bbox 合併相近候選: "
             f"{primary['name']} ({primary['confidence']:.2f}) / "
@@ -417,13 +380,12 @@ def _merge_overlapping_close_pairs(predictions: list[dict]) -> list[dict]:
         )
         merged.append(primary)
 
-    # 合併完再依信心由高到低排
     merged.sort(key=lambda x: x["confidence"], reverse=True)
     return merged
 
 
 def _debug_print_close_candidates(predictions: list[dict]) -> None:
-    """印出每道菜的最佳／次佳，以及是否採用 alternative。"""
+    """印出每道菜的主結果、次佳，以及是否寫入 alternative。"""
     if not predictions:
         print("[debug] 候選: 無")
         return
@@ -443,7 +405,7 @@ def _debug_print_close_candidates(predictions: list[dict]) -> None:
 
 
 def _fit_jev_size(width: int, height: int) -> tuple[int, int]:
-    """把邊長收進 Jev 的 256～1568，總像素收進 78,400～2,458,624。"""
+    """將寬與高限制在 256 到 1568。將總像素限制在 78400 到 2458624。"""
     scale = 1.0
     long_side = max(width, height)
     if long_side > 1568:
@@ -468,7 +430,7 @@ def _fit_jev_size(width: int, height: int) -> tuple[int, int]:
 
 
 def _jpeg_data_url_for_jev(path: Path) -> str:
-    """轉成 Jev 接受的 JPEG data URL。相對座標仍對得上轉正後的原圖。"""
+    """轉成 Jev 接受的 JPEG data URL。座標相對轉正後的圖片。"""
     with Image.open(path) as img:
         rgb = img.convert("RGB")
         fitted = _fit_jev_size(*rgb.size)
@@ -481,7 +443,7 @@ def _jpeg_data_url_for_jev(path: Path) -> str:
 
 
 def _jev_questions(dishes: list[Dish]) -> dict:
-    """每道菜一題在不在、一題外框。鍵用資料庫 id。"""
+    """每道菜有一題 Noul 與一題 Box。題目鍵使用資料庫 id。"""
     questions: dict = {}
     for dish in dishes:
         appearance = _clip(dish.cooking_method, 200)
@@ -499,7 +461,7 @@ def _jev_questions(dishes: list[Dish]) -> dict:
 
 
 def _bbox_from_jev_edges(edges) -> Optional[list[float]]:
-    """Jev 的四邊轉成現有檢查函式吃的角點，再得到 [x, y, w, h]。"""
+    """將 Jev 的 left、top、right、bottom 轉成 [x, y, w, h]。"""
     if not isinstance(edges, dict):
         return None
     try:
@@ -525,7 +487,7 @@ def _second_view(pred: dict) -> dict:
 
 
 def _with_second(primary: dict, other: dict) -> dict:
-    """次佳一律記下；差距夠小才讓前端顯示雙結果。"""
+    """寫入 second_best。信心差在門檻內時，同時寫入 alternative。"""
     merged = dict(primary)
     second = _second_view(other)
     merged["second_best"] = second
@@ -536,7 +498,7 @@ def _with_second(primary: dict, other: dict) -> dict:
 
 
 def _merge_jev_cells(primaries: list[dict]) -> list[dict]:
-    """IoU 夠高就合成同一格，不看信心差。"""
+    """IoU 大於或等於 JEV_SAME_CELL_IOU 時合成同一格。不檢查信心差。"""
     remaining = [dict(item) for item in primaries]
     merged: list[dict] = []
     while remaining:
@@ -557,7 +519,7 @@ def _merge_jev_cells(primaries: list[dict]) -> list[dict]:
 def _fill_rejected_seconds(
     primaries: list[dict], rejected: list[dict]
 ) -> list[dict]:
-    """主結果還沒有次佳時，從沒過門檻、但框在同一格的菜補上。"""
+    """主結果沒有 second_best 時，從未過門檻且 IoU 足夠的菜補上。"""
     filled: list[dict] = []
     for primary in primaries:
         if primary.get("second_best") or not rejected:
@@ -581,7 +543,7 @@ def _predictions_from_jev(
     answers: dict,
     present_min: float,
 ) -> list[dict]:
-    """Noul 決定留不留，Box 只提供外框。"""
+    """Noul 決定菜色是否留下。Box 只提供外框。"""
     primaries: list[dict] = []
     rejected: list[dict] = []
     for dish in dishes:
@@ -634,18 +596,22 @@ def _post_jev_decisions(body: dict) -> dict:
     return payload
 
 
+def _finished(predictions: list[dict], model: str, raw) -> dict:
+    _nudge_bboxes(predictions)
+    print(f"[debug] 主預測共 {len(predictions)} 道: {[p.get('name') for p in predictions]}")
+    _debug_print_close_candidates(predictions)
+    return {"predictions": predictions, "model": model, "raw": raw}
+
+
 def recognize_dishes_chat(image_path: Path, dishes: list[Dish]) -> dict:
-    """看圖對話：沿用原本的提示詞、對菜單與相近合併。"""
+    """chat 路徑。使用提示詞、菜單對應，以及信心差合併。"""
     if not dishes:
         return {"predictions": [], "model": MODEL, "raw": "菜單為空"}
 
-    # 先轉正方向，再送模型（與之後畫框一致）
     _ensure_upright_image(image_path)
 
-    # 圖片轉 base64 字串
     image_b64 = base64.standard_b64encode(image_path.read_bytes()).decode("ascii")
 
-    # 組 prompt → 問模型 → 拿回文字
     raw_text = _ask_model(
         _build_prompt(_dish_catalog(dishes)),
         _guess_media_type(image_path),
@@ -654,7 +620,7 @@ def recognize_dishes_chat(image_path: Path, dishes: list[Dish]) -> dict:
     parsed = _extract_json(raw_text)
 
     predictions = []
-    seen = set()  # 同一道「主預測」只留一次；次佳不佔名額，避免漏掉盤上其他真菜
+    seen = set()  # 只記錄主預測的菜色 id。次佳不加入此集合。
     for item in parsed.get("predictions", []):
         dish = _match_dish(item, dishes)
         if not dish or dish.id in seen:
@@ -671,8 +637,7 @@ def recognize_dishes_chat(image_path: Path, dishes: list[Dish]) -> dict:
         )
         if second:
             pred["second_best"] = second
-            # 注意：不可把 second 加入 seen。
-            # 否則若 A 的次佳是 B，而 B 也實際出現在別格，B 會被整筆丟掉（terra 漏菜常見原因）。
+            # 次佳的菜色 id 不加入 seen。該菜色出現在另一格時仍要保留。
             alt = _maybe_adopt_alternative(pred["name"], pred["confidence"], second)
             if alt:
                 pred["alternative"] = alt
@@ -683,17 +648,13 @@ def recognize_dishes_chat(image_path: Path, dishes: list[Dish]) -> dict:
                 )
         predictions.append(pred)
 
-    # 信心高的排前面，再合併重疊且信心相近的獨立兩筆
     predictions.sort(key=lambda x: x["confidence"], reverse=True)
     predictions = _merge_overlapping_close_pairs(predictions)
-    _nudge_bboxes(predictions)
-    print(f"[debug] 主預測共 {len(predictions)} 道: {[p.get('name') for p in predictions]}")
-    _debug_print_close_candidates(predictions)
-    return {"predictions": predictions, "model": MODEL, "raw": raw_text}
+    return _finished(predictions, MODEL, raw_text)
 
 
 def recognize_dishes_jev(image_path: Path, dishes: list[Dish]) -> dict:
-    """Jev：每道菜問在不在與外框，同一格再合併。"""
+    """Jev 路徑。每道菜詢問是否存在與外框。同一格再合併。"""
     if not dishes:
         return {"predictions": [], "model": JEV_MODEL, "raw": "菜單為空"}
 
@@ -713,10 +674,7 @@ def recognize_dishes_jev(image_path: Path, dishes: list[Dish]) -> dict:
     predictions = _predictions_from_jev(
         dishes, payload["answers"], NOUL_PRESENT_MIN
     )
-    _nudge_bboxes(predictions)
-    print(f"[debug] 主預測共 {len(predictions)} 道: {[p.get('name') for p in predictions]}")
-    _debug_print_close_candidates(predictions)
-    return {"predictions": predictions, "model": JEV_MODEL, "raw": payload}
+    return _finished(predictions, JEV_MODEL, payload)
 
 
 def _model_for(engine: InferenceEngine) -> str:
@@ -732,7 +690,7 @@ def recognize_dishes(
     dishes: list[Dish],
     engine: InferenceEngine = InferenceEngine.CHAT,
 ) -> dict:
-    """依引擎辨識。菜單是空的就不打外部 API。"""
+    """依引擎辨識。菜單為空時不呼叫外部 API。"""
     if not dishes:
         return {"predictions": [], "model": _model_for(engine), "raw": "菜單為空"}
     if engine is InferenceEngine.CHAT:
@@ -740,17 +698,3 @@ def recognize_dishes(
     if engine is InferenceEngine.JEV:
         return recognize_dishes_jev(image_path, dishes)
     assert_never(engine)
-
-
-def _ensure_upright_image(path: Path) -> None:
-    """依 EXIF 轉正並覆寫檔案，讓模型看圖與畫框用同一像素方向。"""
-    with Image.open(path) as img:
-        oriented = ImageOps.exif_transpose(img) # 打開圖片後，依 EXIF 的旋轉／鏡像標記，把像素真正轉正。
-        # 轉成 RGB 存回，去掉方向標記造成的錯位
-        rgb = oriented.convert("RGB")
-        # 轉成一般 RGB
-        suffix = path.suffix.lower()
-        if suffix in {".png", ".webp", ".gif"}:
-            rgb.save(path)
-        else:
-            rgb.save(path, format="JPEG", quality=92)

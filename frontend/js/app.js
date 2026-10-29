@@ -1,39 +1,38 @@
-// 使用者頁：上傳餐盤圖並顯示辨識結果
+// 上傳餐盤圖並顯示辨識結果。
 
-// --- DOM 元素 ---
 const toastEl = document.getElementById("toast");
-const plateInput = document.getElementById("plate-input");   // 隱藏的 file input
-const dropzone = document.getElementById("dropzone");         // 拖曳／點擊上傳區
-const preview = document.getElementById("preview");           // 預覽圖
+const plateInput = document.getElementById("plate-input");
+const dropzone = document.getElementById("dropzone");
+const preview = document.getElementById("preview");
 const predictBtn = document.getElementById("predict-btn");
 const predictForm = document.getElementById("predict-form");
-const resultsPanel = document.getElementById("results-panel"); // 結果整塊區塊
-const resultCanvas = document.getElementById("result-canvas"); // 單結果標註圖
+const resultsPanel = document.getElementById("results-panel");
+const resultCanvas = document.getElementById("result-canvas");
 const resultBoxedPair = document.getElementById("result-boxed-pair");
 const resultCanvas1 = document.getElementById("result-canvas-1");
 const resultCanvas2 = document.getElementById("result-canvas-2");
-const resultsList = document.getElementById("results-list");   // 結果卡片列表
-const emptyResult = document.getElementById("empty-result");   // 沒辨到菜時的提示
-const modelTag = document.getElementById("model-tag");         // 顯示目前模型名稱
+const resultsList = document.getElementById("results-list");
+const emptyResult = document.getElementById("empty-result");
+const modelTag = document.getElementById("model-tag");
 
-let selectedFile = null; // 目前選到要辨識的圖片
-let previewUrl = null;   // createObjectURL 產生的本機網址（用完要 revoke）
+let selectedFile = null;
+let previewUrl = null;
 
-// 依這次辨識的菜色數量，在色環上均分色相，保證每道菜顏色不同
+// 依菜色數量均分色相。每道菜使用不同顏色。
 function colorForIndex(index, total) {
   const n = Math.max(total, 1);
   const hue = Math.round((index * 360) / n) % 360;
   return `hsl(${hue}, 58%, 40%)`;
 }
 
-// 雙候選右側用略偏的色相，與左側區隔
+// 次佳使用偏移 28 度的色相。
 function altColorForIndex(index, total) {
   const n = Math.max(total, 1);
   const hue = Math.round((index * 360) / n + 28) % 360;
   return `hsl(${hue}, 52%, 38%)`;
 }
 
-// 畫面底部短暫提示訊息
+// 在畫面底部顯示訊息 2.8 秒。
 function showToast(message) {
   toastEl.textContent = message;
   toastEl.classList.remove("hidden");
@@ -41,12 +40,11 @@ function showToast(message) {
   showToast._t = setTimeout(() => toastEl.classList.add("hidden"), 2800);
 }
 
-// 設定預覽圖，並依有無檔案啟用／停用「開始辨識」按鈕
+// 設定預覽圖。沒有檔案時停用「開始辨識」。
 function setPreview(file) {
   selectedFile = file;
   predictBtn.disabled = !file;
 
-  // 釋放舊的本機預覽網址，避免記憶體佔用
   if (previewUrl) {
     URL.revokeObjectURL(previewUrl);
     previewUrl = null;
@@ -59,17 +57,15 @@ function setPreview(file) {
     hideBoxedPair();
     return;
   }
-  previewUrl = URL.createObjectURL(file); // 本機預覽，不用靠伺服器存檔
+  previewUrl = URL.createObjectURL(file);
   preview.src = previewUrl;
   preview.classList.remove("hidden");
 }
 
-// 用檔案選擇器選圖
 plateInput.addEventListener("change", () => {
   setPreview(plateInput.files?.[0] || null);
 });
 
-// --- 拖曳上傳 ---
 ["dragenter", "dragover"].forEach((evt) => {
   dropzone.addEventListener(evt, (e) => {
     e.preventDefault();
@@ -88,12 +84,12 @@ dropzone.addEventListener("drop", (e) => {
   else showToast("請放置圖片檔");
 });
 
-// 信心分數 0~1 → 顯示用百分比字串
+// 將 0 到 1 的信心分數轉成百分比文字。
 function pct(confidence) {
   return `${Math.round(Number(confidence) * 100)}%`;
 }
 
-// 避免菜名／理由含 HTML 特殊字元造成 XSS
+// 將文字中的 HTML 特殊字元轉成實體。
 function escapeHtml(text) {
   return String(text)
     .replaceAll("&", "&amp;")
@@ -102,14 +98,14 @@ function escapeHtml(text) {
     .replaceAll('"', "&quot;");
 }
 
-// 卡片次要資訊：菜色編號 + 模型理由
+// 卡片次列顯示菜色編號與理由。
 function halfMeta(item) {
   const code = item.dish_code != null ? `編號 ${item.dish_code}` : "—";
   const reason = item.reason ? ` · ${escapeHtml(item.reason)}` : "";
   return `${code}${reason}`;
 }
 
-// 取出「已採用」的次佳候選（有 alternative 才會雙條顯示）
+// 有 alternative 且有菜名時回傳該物件。
 function getAlternative(item) {
   const alt = item?.alternative;
   if (!alt || typeof alt !== "object") return null;
@@ -117,7 +113,7 @@ function getAlternative(item) {
   return alt;
 }
 
-// 雙結果卡片的左／右半邊 HTML
+// 雙結果卡片的左半或右半。
 function renderHalf(item, color) {
   return `
     <div class="result-half" style="border-left-color:${color}">
@@ -131,7 +127,7 @@ function renderHalf(item, color) {
   `;
 }
 
-// 在指定 canvas 上畫原圖與外框（瀏覽器繁中字型；不合併雙菜名）
+// 在 canvas 畫原圖與外框。每格只畫一個菜名。
 function paintBoxedCanvas(canvas, items) {
   if (!canvas || !previewUrl) {
     canvas?.classList.add("hidden");
@@ -175,14 +171,7 @@ function paintBoxedCanvas(canvas, items) {
       const tw = ctx.measureText(label).width;
       const th = Math.max(16, Math.round(w / 36));
 
-      // --- 原本：標籤貼在外框左上角上方 ---
-      // const ly = Math.max(0, py - th - 4);
-      // ctx.fillStyle = color;
-      // ctx.fillRect(px, ly, tw + pad * 2, th + 4);
-      // ctx.fillStyle = "#fff";
-      // ctx.fillText(label, px + pad, ly + th - 2);
-
-      // --- 現在：標籤在 bbox 水平置中、垂直中間偏上 ---
+      // 標籤位於 bbox 的水平中心。垂直位置在中線上方。
       const labelW = tw + pad * 2;
       const labelH = th + 4;
       const lx = px + (pw - labelW) / 2;
@@ -198,7 +187,7 @@ function paintBoxedCanvas(canvas, items) {
   img.src = previewUrl;
 }
 
-// result1：每格只畫主預測菜名（共用 bbox）
+// result1 只畫主預測菜名。bbox 與 result2 相同。
 function toResult1Items(items) {
   return (items || []).map((item) => ({
     name: item.name,
@@ -209,30 +198,21 @@ function toResult1Items(items) {
   }));
 }
 
-// result2：有次佳則改畫次佳菜名，bbox 仍用同一格
+// result2 有次佳時畫次佳菜名。bbox 與 result1 相同。
 function toResult2Items(items) {
   return (items || []).map((item) => {
-    const alt = getAlternative(item);
-    if (!alt) {
-      return {
-        name: item.name,
-        dish_code: item.dish_code,
-        confidence: item.confidence,
-        reason: item.reason,
-        bbox: item.bbox,
-      };
-    }
+    const src = getAlternative(item) || item;
     return {
-      name: alt.name,
-      dish_code: alt.dish_code,
-      confidence: alt.confidence,
-      reason: alt.reason,
+      name: src.name,
+      dish_code: src.dish_code,
+      confidence: src.confidence,
+      reason: src.reason,
       bbox: item.bbox,
     };
   });
 }
 
-// 信心相近時並排顯示兩張標註圖
+// 有 alternative 時並排顯示兩張標註圖。
 function showDualCanvases(items) {
   resultCanvas.classList.add("hidden");
   resultBoxedPair?.classList.remove("hidden");
@@ -244,13 +224,13 @@ function hideBoxedPair() {
   resultBoxedPair?.classList.add("hidden");
 }
 
-// 一般情況：只顯示一張標註圖
+// 只顯示一張標註圖。
 function showSingleCanvas(items) {
   hideBoxedPair();
   paintBoxedCanvas(resultCanvas, toResult1Items(items));
 }
 
-// 把後端辨識結果畫成卡片，並在圖上框出每道菜
+// 將辨識結果畫成卡片，並在圖上畫外框。
 function renderResults(data) {
   resultsPanel.hidden = false;
   modelTag.textContent = `模型：${data.model || "-"}`;
@@ -288,7 +268,6 @@ function renderResults(data) {
   emptyResult.classList.toggle("hidden", items.length > 0);
 
   if (closePairs.length > 0) {
-    // 雙結果：只顯示 result1 / result2 兩張（canvas 繁中），不畫合併圖
     showDualCanvases(items);
   } else {
     showSingleCanvas(items);
@@ -320,7 +299,7 @@ function renderResults(data) {
   });
 }
 
-// 送出表單：上傳圖片到 /api/predict 並顯示結果
+// 將圖片上傳到 /api/predict，並顯示結果。
 predictForm.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!selectedFile) return;
