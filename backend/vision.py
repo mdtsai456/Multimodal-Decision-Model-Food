@@ -7,6 +7,7 @@ import json
 import mimetypes
 import os
 import re
+import time
 from enum import Enum
 from pathlib import Path
 from typing_extensions import assert_never
@@ -575,18 +576,27 @@ def _predictions_from_jev(
 def _post_jev_decisions(body: dict) -> dict:
     if not API_KEY:
         raise RuntimeError("ZEABUR_AI_HUB_API_KEY is required")
-    response = httpx.post(
-        JEV_DECISIONS_URL,
-        headers={
-            "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json",
-        },
-        json=body,
-        timeout=120.0,
-    )
-    if response.status_code != 200:
-        detail = response.text[:300].replace("\n", " ")
-        raise RuntimeError(f"Decisions API HTTP {response.status_code}: {detail}")
+    # 429、502、503、529 是暫時忙碌。最多再送 2 次，每次間隔 2 秒。
+    response = None
+    for attempt in range(3):
+        response = httpx.post(
+            JEV_DECISIONS_URL,
+            headers={
+                "Authorization": f"Bearer {API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=120.0,
+        )
+        if response.status_code == 200 or response.status_code not in {429, 502, 503, 529}:
+            break
+        if attempt < 2:
+            print(f"[debug] Decisions API HTTP {response.status_code}，2 秒後再送")
+            time.sleep(2)
+    if response is None or response.status_code != 200:
+        detail = (response.text if response is not None else "")[:300].replace("\n", " ")
+        status = response.status_code if response is not None else "none"
+        raise RuntimeError(f"Decisions API HTTP {status}: {detail}")
     try:
         payload = response.json()
     except json.JSONDecodeError as exc:

@@ -9,6 +9,7 @@ from backend.models import Dish
 from backend.vision import (
     InferenceEngine,
     _fit_jev_size,
+    _post_jev_decisions,
     _predictions_from_jev,
     recognize_dishes,
     resolve_engine,
@@ -143,6 +144,34 @@ class EmptyMenuTest(unittest.TestCase):
         self.assertEqual(result["predictions"], [])
         self.assertEqual(result["model"], "typesafe/jev-1.14")
         self.assertEqual(result["raw"], "菜單為空")
+
+
+class DecisionsRetryTest(unittest.TestCase):
+    def test_retries_overloaded_response(self):
+        busy = mock.Mock(status_code=529, text='{"error":{"message":"busy"}}')
+        ok = mock.Mock(status_code=200)
+        ok.json.return_value = {"answers": {"present_1": {"noul": 0.9}}}
+        with (
+            mock.patch("backend.vision.API_KEY", "test-key"),
+            mock.patch("backend.vision.time.sleep") as sleep,
+            mock.patch("backend.vision.httpx.post", side_effect=[busy, ok]) as post,
+        ):
+            payload = _post_jev_decisions({"model": "x"})
+        self.assertEqual(payload["answers"]["present_1"]["noul"], 0.9)
+        self.assertEqual(post.call_count, 2)
+        sleep.assert_called_once_with(2)
+
+    def test_auth_failure_is_not_retried(self):
+        denied = mock.Mock(status_code=401, text="expired")
+        with (
+            mock.patch("backend.vision.API_KEY", "test-key"),
+            mock.patch("backend.vision.time.sleep") as sleep,
+            mock.patch("backend.vision.httpx.post", return_value=denied),
+        ):
+            with self.assertRaises(RuntimeError) as caught:
+                _post_jev_decisions({"model": "x"})
+        self.assertIn("401", str(caught.exception))
+        sleep.assert_not_called()
 
 
 if __name__ == "__main__":

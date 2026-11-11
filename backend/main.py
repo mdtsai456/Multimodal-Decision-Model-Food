@@ -86,12 +86,16 @@ def list_dishes(db: Session = Depends(get_db)):
     return [dish_to_out(d) for d in dishes]
 
 
-@app.get("/api/dishes/{dish_id}", response_model=DishOut)
-def get_dish(dish_id: int, db: Session = Depends(get_db)):
+def _get_dish_or_404(db: Session, dish_id: int) -> Dish:
     dish = db.query(Dish).filter(Dish.id == dish_id).first()
     if not dish:
         raise HTTPException(status_code=404, detail="找不到菜色")
-    return dish_to_out(dish)
+    return dish
+
+
+@app.get("/api/dishes/{dish_id}", response_model=DishOut)
+def get_dish(dish_id: int, db: Session = Depends(get_db)):
+    return dish_to_out(_get_dish_or_404(db, dish_id))
 
 
 @app.put("/api/dishes/{dish_id}", response_model=DishOut)
@@ -101,9 +105,7 @@ def update_dish(
     db: Session = Depends(get_db),
     _: str = Depends(require_admin),
 ):
-    dish = db.query(Dish).filter(Dish.id == dish_id).first()
-    if not dish:
-        raise HTTPException(status_code=404, detail="找不到菜色")
+    dish = _get_dish_or_404(db, dish_id)
 
     # 只更新請求有送出的欄位。
     for key, value in body.model_dump(exclude_unset=True).items():
@@ -125,9 +127,7 @@ def delete_dish(
     db: Session = Depends(get_db),
     _: str = Depends(require_admin),
 ):
-    dish = db.query(Dish).filter(Dish.id == dish_id).first()
-    if not dish:
-        raise HTTPException(status_code=404, detail="找不到菜色")
+    dish = _get_dish_or_404(db, dish_id)
     db.delete(dish)
     db.commit()
     return {"ok": True}
