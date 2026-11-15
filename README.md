@@ -1,5 +1,7 @@
 # HealthWeb 餐盤菜色辨識
 
+> **這個 repo 已不再更新。** 程式碼已在 2026-11-15 以 `2d37944` 併入 [healthWeb](https://github.com/mdtsai456/healthWeb)（私人 repo），之後只在那裡更新。
+
 台鋼餐飲智慧辨識 Web：管理員以 Excel 維護菜單；使用者上傳餐盤照片後，系統只從資料庫菜單裡選菜，回傳菜名、信心分數，並在圖上標出外框。辨識引擎有兩種，由 `.env` 的 `INFERENCE_ENGINE` 決定，網頁沒有引擎開關。
 
 - `chat`：OpenAI 相容的看圖對話。位址是 `ZEABUR_AI_HUB_BASE_URL`，模型是 `AI_MODEL`。
